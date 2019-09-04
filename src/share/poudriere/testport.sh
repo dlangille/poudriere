@@ -120,7 +120,6 @@ while getopts "B:o:cniIj:J:kNO:p:PSvwz:" FLAG; do
 			    err 2 "No such overlay ${OPTARG}"
 			OVERLAYS="${OVERLAYS} ${OPTARG}"
 			;;
-			;;
 		p)
 			porttree_exists ${OPTARG} ||
 			    err 2 "No such ports tree ${OPTARG}"

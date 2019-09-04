@@ -6526,7 +6526,6 @@ compute_deps_pkg() {
 				dep_pkgname="${key%%[><=]*}"
 				dpath="${d#*:}"
 				case "${dpath}" in
-					# XXXX
 				${PORTSDIR}/*)
 					dpath=${dpath#${PORTSDIR}/} ;;
 				esac
