@@ -129,6 +129,8 @@ DISTFILES_CACHE=/usr/ports/distfiles
 # It will be mounted into the jail and be shared among all jails.
 # It is recommended that extra ccache configuration be done with
 # ccache -o rather than from the environment.
+# You will want to exclude this from ZFS snapshots or you might
+# wind up using a lot of disk space unintentionally.
 #CCACHE_DIR=/var/cache/ccache
 
 # Static ccache support from host.  This uses the existing
@@ -136,6 +138,7 @@ DISTFILES_CACHE=/usr/ports/distfiles
 # using ccache+memcached which cannot easily be bootstrapped
 # otherwise.  The path to the PREFIX where ccache was installed
 # must be used here, and ccache must have been built statically.
+# Install either devel/ccache-static or devel/ccache-memcached-static.
 # Note also that ccache+memcached will require network access
 # which is normally disabled.  Separately setting RESTRICT_NETWORKING=no
 # may be required for non-localhost memcached servers.
