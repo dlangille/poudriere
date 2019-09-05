@@ -136,6 +136,7 @@ DISTFILES_CACHE=/usr/ports/distfiles
 # using ccache+memcached which cannot easily be bootstrapped
 # otherwise.  The path to the PREFIX where ccache was installed
 # must be used here, and ccache must have been built statically.
+# Install either devel/ccache-static or devel/ccache-memcached-static.
 # Note also that ccache+memcached will require network access
 # which is normally disabled.  Separately setting RESTRICT_NETWORKING=no
 # may be required for non-localhost memcached servers.
