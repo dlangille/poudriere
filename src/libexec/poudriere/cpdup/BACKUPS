@@ -1,5 +1,3 @@
-$DragonFly: src/bin/cpdup/BACKUPS,v 1.4 2007/05/17 08:19:00 swildner Exp $
-
 			    INCREMENTAL BACKUP HOWTO
 
     This document describes one of several ways to set up a LAN backup and
@@ -35,7 +33,7 @@ $DragonFly: src/bin/cpdup/BACKUPS,v 1.4 2007/05/17 08:19:00 swildner Exp $
     Before you actually do the NFS mount, create a dummy file for each
     mount point that can be used by scripts to detect when an NFS mount
     has not been done.  Scripts can thus avoid a common failure scenario
-    and not accidently cpdup an empty mount point to the backup partition
+    and not accidentally cpdup an empty mount point to the backup partition
     (destroying that day's backup in the process).
 
 	touch /nfs/box1/home/NOT_MOUNTED
@@ -85,7 +83,7 @@ $DragonFly: src/bin/cpdup/BACKUPS,v 1.4 2007/05/17 08:19:00 swildner Exp $
 			PART 3 - DO AN INCREMENTAL BACKUP
 
     An incremental backup is exactly the same as a level 0 backup EXCEPT
-    you use the -H option to specify the location of the most recent 
+    you use the -H option to specify the location of the most recent
     completed backup.  We simply maintain the handy softlink pointing at
     the most recent completed backup and the cpdup required to do this
     becomes trivial.
@@ -116,7 +114,7 @@ $DragonFly: src/bin/cpdup/BACKUPS,v 1.4 2007/05/17 08:19:00 swildner Exp $
     and copy the file instead.  Generally speaking only a few special cases
     will hit the hardlink limit for a filesystem.  For example, the
     CVS/Root file in a checked out cvs repository is often hardlinked, and
-    the sheer number of hardlinked 'Root' files multiplied by the number 
+    the sheer number of hardlinked 'Root' files multiplied by the number
     of backups can often hit the filesystem hardlink limit.
 
 		    PART 4 - DO AN INCREMENTAL VERIFIED BACKUP
@@ -125,7 +123,7 @@ $DragonFly: src/bin/cpdup/BACKUPS,v 1.4 2007/05/17 08:19:00 swildner Exp $
     might exist on the physical /backup disk in only one place even though
     it may be present in dozens of daily mirrors.  To ensure that the
     file being hardlinked does not get corrupted cpdup's -f option can be
-    used in conjunction with -H to force cpdup to validate the contents 
+    used in conjunction with -H to force cpdup to validate the contents
     of the file, even if all the stat info looks identical.
 
 	cpdup -f -H /backup/mirrors/box1 ...
@@ -137,7 +135,7 @@ $DragonFly: src/bin/cpdup/BACKUPS,v 1.4 2007/05/17 08:19:00 swildner Exp $
     will have a distinct copy of all the file data and you will quickly
     run out of space in your /backup partition.
 
-		    MAINTAINANCE OF THE "/backup" DIRECTORY
+		    MAINTENANCE OF THE "/backup" DIRECTORY
 
     Now, clearly you are going to run out of space in /backup if you keep
     doing this, but you may be surprised at just how many daily incrementals
@@ -154,14 +152,14 @@ $DragonFly: src/bin/cpdup/BACKUPS,v 1.4 2007/05/17 08:19:00 swildner Exp $
     Making an off-site backup involves similar methodology, but you use
     cpdup's remote host capability to generate the backup.  To avoid
     complications it is usually best to take a mirror already generated on
-    your LAN backup box and copy that to the remote box. 
+    your LAN backup box and copy that to the remote box.
 
     The remote backup box does not use NFS, so setup is trivial.  Just
     create your super-large /backup partition and mkdir /backup/mirrors.
     Your LAN backup box will need root access via ssh to your remote backup
     box.  See the section "SSH SECURITY TIPS" below.
 
-    You can use the handy softlink to get the latest 'box1.date' mirror 
+    You can use the handy softlink to get the latest 'box1.date' mirror
     directory and since the mirror is all in one partition you can just
     cpdup the entire machine in one command.  Use the same dated directory
     name on the remote box, so:
@@ -232,7 +230,7 @@ $DragonFly: src/bin/cpdup/BACKUPS,v 1.4 2007/05/17 08:19:00 swildner Exp $
 
     Once done you can do incremental backups using './do_mirror 1' to do a
     verified incremental, or './do_mirror 2' to do a stat-optimized
-    incremental.  You can enable the cron jobs that run do_mirror and 
+    incremental.  You can enable the cron jobs that run do_mirror and
     do_cleanup now.
 
     --
@@ -338,6 +336,6 @@ $DragonFly: src/bin/cpdup/BACKUPS,v 1.4 2007/05/17 08:19:00 swildner Exp $
 
     If your OpenSSH version has been patched to support unencrypted transfers
     *AND* you trust the physical network between the machines involved, you
-    might want to disable encryption alltogether:
+    might want to disable encryption altogether:
 
 	cpdup -F -cnone ...

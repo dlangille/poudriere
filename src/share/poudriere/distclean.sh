@@ -25,6 +25,8 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 
+. ${SCRIPTPREFIX}/common.sh
+
 usage() {
 	cat <<EOF
 poudriere distclean [options] [-a|-f file|cat/port ...]
@@ -46,13 +48,11 @@ Options:
                    debug output
     -y          -- Assume yes when deleting and do not prompt for confirmation
 EOF
-	exit 1
+	exit ${EX_USAGE}
 }
 
 DRY_RUN=0
 ALL=0
-
-. ${SCRIPTPREFIX}/common.sh
 
 [ $# -eq 0 ] && usage
 
@@ -66,7 +66,7 @@ while getopts "af:J:np:vy" FLAG; do
 			# a cd / was done.
 			[ "${OPTARG#/}" = "${OPTARG}" ] && \
 			    OPTARG="${SAVED_PWD}/${OPTARG}"
-			LISTPKGS="${LISTPKGS} ${OPTARG}"
+			LISTPKGS="${LISTPKGS:+${LISTPKGS} }${OPTARG}"
 			;;
 		J)
 			PREPARE_PARALLEL_JOBS=${OPTARG}
@@ -80,7 +80,7 @@ while getopts "af:J:np:vy" FLAG; do
 			PTNAMES="${PTNAMES} ${OPTARG}"
 			;;
 		v)
-			VERBOSE=$((${VERBOSE} + 1))
+			VERBOSE=$((VERBOSE + 1))
 			;;
 		y)
 			answer=yes
@@ -122,8 +122,11 @@ gather_distfiles() {
 
 	msg_verbose "Gathering distfiles for: ${originspec}"
 
-	awk -v distdir="${DISTFILES_CACHE%/}" '/SIZE/ {print distdir "/" substr($2, 2, length($2) - 2)}' \
-		"${distinfo_file}" >> ${DISTFILES_LIST}
+	# Append from inside awk to force line buffering
+	awk -v distdir="${DISTFILES_CACHE%/}" \
+	    -v out="${DISTFILES_LIST}" \
+	    '/SIZE/ {print distdir "/" substr($2, 2, length($2) - 2) >> out}' \
+	    "${distinfo_file}"
 }
 
 [ -d ${DISTFILES_CACHE:-/nonexistent} ] ||
@@ -134,17 +137,18 @@ CLEANUP_HOOK=distfiles_cleanup
 
 read_packages_from_params "$@"
 
-: ${DEP_FATAL_ERROR_FILE:=dep_fatal_error-$$}
-clear_dep_fatal_error
-parallel_start
 for PTNAME in ${PTNAMES}; do
+	: ${DEP_FATAL_ERROR_FILE:=dep_fatal_error-$$}
+	clear_dep_fatal_error
+	parallel_start
+
 	export PORTSDIR=$(pget ${PTNAME} mnt)
 	[ -d "${PORTSDIR}/ports" ] && PORTSDIR="${PORTSDIR}/ports"
 	[ -z "${PORTSDIR}" ] && err 1 "No such ports tree: ${PTNAME}"
 
 	__MAKE_CONF=$(mktemp -t poudriere-make.conf)
 	export __MAKE_CONF
-	setup_ports_env "/" "${__MAKE_CONF}"
+	setup_ports_env "" "${__MAKE_CONF}"
 	if [ -z "${NO_PACKAGE_BUILDING}" ]; then
 		echo "BATCH=yes"
 		echo "PACKAGE_BUILDING=yes"
@@ -152,7 +156,7 @@ for PTNAME in ${PTNAMES}; do
 		echo "PACKAGE_BUILDING_FLAVORS=yes"
 	fi >> "${__MAKE_CONF}"
 
-	MASTERMNT= load_moved
+	MASTERMNT= MASTERMNTREL= load_moved
 	msg "Gathering all expected distfiles for ports tree '${PTNAME}'"
 
 	for originspec in $(listed_ports show_moved); do
@@ -161,10 +165,12 @@ for PTNAME in ${PTNAMES}; do
 		    "(${COLOR_PORT}${originspec}${COLOR_RESET})${COLOR_WARN}" \
 		    gather_distfiles "${originspec}"
 	done
+	if ! parallel_stop || check_dep_fatal_error; then
+		err 1 "Fatal errors encountered gathering distfiles metadata"
+	fi
+	rm -f "${__MAKE_CONF}"
+	unset __MAKE_CONF
 done
-if ! parallel_stop || check_dep_fatal_error; then
-	err 1 "Fatal errors encountered gathering distfiles metadata"
-fi
 
 # Remove duplicates
 sort -u ${DISTFILES_LIST} > ${DISTFILES_LIST}.expected
@@ -174,7 +180,8 @@ msg "Gathering list of actual distfiles"
 # This is redundant but here for paranoia.
 [ -n "${DISTFILES_CACHE}" ] ||
     err 1 "DISTFILES_CACHE must be set (cf. poudriere.conf)"
-find -x ${DISTFILES_CACHE}/ -type f | sort > ${DISTFILES_LIST}.actual
+find -x ${DISTFILES_CACHE}/ -type f ! -name '.*' | \
+    sort > ${DISTFILES_LIST}.actual
 
 comm -1 -3 ${DISTFILES_LIST}.expected ${DISTFILES_LIST}.actual \
 	> ${DISTFILES_LIST}.unexpected
@@ -189,5 +196,5 @@ if [ ${ret} -eq 2 ]; then
 	exit 0
 fi
 if [ "${DRY_RUN}" -eq 0 ]; then
-	find ${DISTFILES_CACHE}/ -type d -empty -delete
+	find -x ${DISTFILES_CACHE}/ -type d -mindepth 1 -empty -delete
 fi

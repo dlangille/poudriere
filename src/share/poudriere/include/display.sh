@@ -56,6 +56,9 @@ display_output() {
 			q)
 				quiet=1
 				;;
+			*)
+				err 1 "display_output: Invalid flag"
+				;;
 		esac
 	done
 
@@ -64,7 +67,7 @@ display_output() {
 	format="${_DISPLAY_FORMAT}"
 
 	# Determine optimal format
-	while read line; do
+	while mapfile_read_loop_redir line; do
 		eval "set -- ${line}"
 		cnt=0
 		for arg in "$@"; do
@@ -76,7 +79,7 @@ display_output() {
 				# Set actual value
 				hash_set lengths ${cnt} ${#arg}
 			fi
-			cnt=$((${cnt} + 1))
+			cnt=$((cnt + 1))
 		done
 	done <<-EOF
 	${_DISPLAY_DATA}
@@ -109,7 +112,8 @@ display_output() {
 
 	# Sort as configured in display_setup()
 	echo "${_DISPLAY_DATA}" | tail -n +2 | \
-	    sort ${_DISPLAY_COLUMN_SORT} | while read line; do
+	    sort ${_DISPLAY_COLUMN_SORT} | \
+	    while mapfile_read_loop_redir line; do
 		eval "set -- ${line}"
 		printf "${format}\n" "$@"
 	done

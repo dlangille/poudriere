@@ -35,7 +35,7 @@ createfs() {
 	if [ -n "${fs}" -a "${fs}" != "none" ]; then
 		msg_n "Creating ${name} fs at ${mnt}..."
 		if ! zfs create -p \
-			-o compression=lz4 \
+			-o compression=on \
 			-o atime=off \
 			-o mountpoint=${mnt} ${fs}; then
 			echo " fail"
@@ -60,32 +60,72 @@ createfs() {
 	fi
 }
 
-do_clone() {
+_do_cpdup() {
+	[ $# -eq 4 ] || eargs _do_cpdup rflags cpignore src dst
+	local rflags="$1"
+	local cpignore="$2"
+	local src="$3"
+	local dst="$4"
+
+	if [ "${src}" = "/" -o "${dst}" = "/" ]; then
+		err 1 "Tried to cpdup /; src=${src} dst=${dst}"
+	fi
+
+	mkdir -p "${dst%/*}"
+	cpdup -i0 ${rflags} ${cpignore} "${src}" "${dst}"
+}
+
+_do_clone() {
 	local -; set -f
-	[ $# -lt 2 ] && eargs do_clone [-r] src dst
-	[ $# -gt 3 ] && eargs do_clone [-r] src dst
-	local src dst common relative FLAG
+	[ $# -lt 3 ] && eargs _do_clone rflags args...
+	local rflags="$1"
+	shift
+	local src dst common relative cpignore FLAG
 
 	relative=0
-	while getopts "r" FLAG; do
+	cpignore=""
+	while getopts "rxX:" FLAG; do
 		case "${FLAG}" in
 			r) relative=1 ;;
+			x) cpignore="-x" ;;
+			X) cpignore="-X ${OPTARG}" ;;
+			*) err 1 "_do_clone: Invalid flag" ;;
 		esac
 	done
 	shift $((OPTIND-1))
+	[ $# -eq 2 ] || eargs _do_clone rflags args...
+	src="$1"
+	dst="$2"
 
 	if [ ${relative} -eq 1 ]; then
-		set -- $(relpath_common "${1}" "${2}")
+		set -- $(relpath_common "${src}" "${dst}")
 		common="${1}"
 		src="${2}"
 		dst="${3}"
+		if [ "${common}" = "/" ] &&
+			[ "${src}" = "." -o "${dst}" = "." ]; then
+			err 1 "Tried to cpdup /; common=${common} src=${src} dst=${dst}"
+		fi
 		(
-			cd "${common}"
-			cpdup -i0 -x "${src}" "${dst}"
+			cd "${common}" || err 1 "Cannot chdir ${common}"
+			_do_cpdup "${rflags}" "${cpignore}" "${src}" "${dst}"
 		)
-	else
-		cpdup -i0 -x "${1}" "${2}"
+		return
 	fi
+
+	_do_cpdup "${rflags}" "${cpignore}" "${src}" "${dst}"
+}
+
+do_clone() {
+	[ $# -lt 2 ] && eargs do_clone [-r] [-x | -X cpignore ] src dst
+
+	_do_clone "-o" "$@"
+}
+
+do_clone_del() {
+	[ $# -lt 2 ] && eargs do_clone_del [-r] [-x | -X cpignore ] src dst
+
+	_do_clone "-s0 -f" "$@"
 }
 
 rollback_file() {
@@ -126,12 +166,9 @@ rollbackfs() {
 		fi
 		tries=0
 		while :; do
-			if ! zfs rollback -r "${fs}@${name}"; then
-				unlink "${sfile}"
-				err 1 "Unable to rollback ${fs} to ${name}"
-			fi
 			# Success
-			if ! [ -f "${sfile}" ]; then
+			if zfs rollback -r "${fs}@${name}" && \
+			    ! [ -f "${sfile}" ]; then
 				break
 			fi
 			tries=$((tries + 1))
@@ -146,7 +183,7 @@ rollbackfs() {
 		return
 	fi
 
-	do_clone -r "${MASTERMNT}" "${mnt}"
+	do_clone_del -rx "${MASTERMNT}" "${mnt}"
 }
 
 findmounts() {
@@ -155,7 +192,7 @@ findmounts() {
 
 	mount | awk -v mnt="${mnt}${pattern}" '$3 ~ mnt {print $1 " " $3}' | \
 	    sort -r -k 2 | \
-	    while read dev pt; do
+	    while mapfile_read_loop_redir dev pt; do
 		if [ "${dev#/dev/md*}" != "${dev}" ]; then
 			umount ${UMOUNT_NONBUSY} "${pt}" || \
 			    umount -f "${pt}" || :
@@ -238,9 +275,9 @@ clonefs() {
 	local to=$2
 	local snap=$3
 	local name zfs_to
-	local fs=$(zfs_getfs ${from})
-	local basepath dir dirs skippaths cpignore cpignores mnt
+	local fs mnt
 
+	fs=$(zfs_getfs ${from})
 	destroyfs ${to} jail
 	mkdir -p ${to}
 	mnt=$(realpath "${to}")
@@ -272,54 +309,38 @@ clonefs() {
 		# Insert this into the zfs_getfs cache.
 		cache_set "${zfs_to}" _zfs_getfs "${to}"
 	else
+		local cpignore
+
+		cpignore=
 		[ ${TMPFS_ALL} -eq 1 ] && mnt_tmpfs all "${mnt}"
 		if [ "${snap}" = "clean" ]; then
+			local skippath skippaths common src dst
+
+			set -- $(relpath_common "${from}" "${mnt}")
+			common="${1}"
+			src="${2}"
+			dst="${3}"
+
+			cpignore="$(mktemp -ut clone.cpignore)"
 			skippaths="$(nullfs_paths "${mnt}")"
+			skippaths="${skippaths} /proc"
 			skippaths="${skippaths} /usr/src"
 			skippaths="${skippaths} /usr/lib/debug"
 			skippaths="${skippaths} /var/db/etcupdate"
 			skippaths="${skippaths} /var/db/freebsd-update"
-			while read basepath dirs; do
-				cpignore="${from}${basepath%/}/.cpignore"
-				for dir in ${dirs}; do
-					echo "${dir}"
-				done >> "${cpignore}"
-				cpignores="${cpignores:+${cpignores} }${cpignore}"
-			done <<-EOF
-			$(echo "${skippaths}" | tr ' ' '\n' | \
-			    sed '/^$/d' | awk '
-			    function basename(file) {
-				    sub(".*/", "", file)
-				    return file
-			    }
-			    function dirname(file) {
-				    sub("/[^/]*$", "", file)
-				    if (file == "")
-					    file = "/"
-				    return file
-			    }
-			    {
-				    dir = dirname($1)
-				    file = basename($1)
-				    if (dir in dirs)
-					    dirs[dir] = dirs[dir] " " file
-				    else
-					    dirs[dir] = file
-			    }
-			    END {
-				    for (dir in dirs)
-					    print dir " " dirs[dir]
-			    }')
-			EOF
+			{
+				for skippath in ${skippaths}; do
+					echo "${src}${skippath}"
+				done
+				echo ".cpignore"
+			} > "${cpignore}"
 		fi
-		do_clone -r "${from}" "${mnt}"
+		do_clone -r ${cpignore:+-X "${cpignore}"} "${from}" "${mnt}"
 		if [ "${snap}" = "clean" ]; then
-			rm -f ${cpignores}
-			echo ".p" >> "${mnt}/.cpignore"
+			rm -f "${cpignore}"
+			echo "${DATADIR_NAME}" >> "${mnt}/.cpignore"
 		fi
 	fi
-	# Create our data dir.
-	mkdir -p "${mnt}/.p"
 }
 
 nullfs_paths() {
@@ -328,23 +349,22 @@ nullfs_paths() {
 	local nullpaths
 
 	nullpaths="${NULLFS_PATHS}"
-	if [ "${MUTABLE_BASE}" = "nullfs" ]; then
+	if [ "${IMMUTABLE_BASE}" = "nullfs" ]; then
 		# Need to keep /usr/src and /usr/ports on their own.
-		nullpaths="${nullpaths} /usr/bin /usr/include /usr/lib \
-		    /usr/lib32 /usr/libdata /usr/libexec /usr/obj \
-		    /usr/sbin /boot /bin /sbin /lib \
-		    /libexec"
-		# Do a real copy for the ref jail since we need to modify
-		# or create directories in them.
-		if [ "${mnt##*/}" != "ref" ]; then
-			nullpaths="${nullpaths} /etc"
+		nullpaths="${nullpaths} /usr/bin /usr/include /usr/lib"
+		nullpaths="${nullpaths} /usr/lib32 /usr/libdata /usr/libexec"
+		nullpaths="${nullpaths} /usr/obj /usr/sbin /boot /bin /lib"
+		nullpaths="${nullpaths} /libexec"
+		# Can only add /sbin if not using static ccache
+		if [ -z "${CCACHE_STATIC_PREFIX}" ]; then
+			nullpaths="${nullpaths} /sbin"
 		fi
 	fi
-	echo "${nullpaths}"
+	echo "${nullpaths}" | tr ' ' '\n' | sort -u
 }
 
 destroyfs() {
-	[ $# -ne 2 ] && eargs destroyfs name type
+	[ $# -ne 2 ] && eargs destroyfs mnt type
 	local mnt="$1"
 	local type="$2"
 	local fs

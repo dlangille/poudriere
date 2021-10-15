@@ -61,12 +61,8 @@ static int f_mode;
 #ifdef SHELL
 #define main mkfifocmd
 #include "bltin/bltin.h"
-#include "options.h"
-#undef uflag
 #include "var.h"
-#include <errno.h>
-#define getenv(var) bltinlookup(var, 1)
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
+#include "helpers.h"
 #endif
 
 int
@@ -79,30 +75,19 @@ main(int argc, char *argv[])
 
 #ifdef SHELL
 	f_mode = 0;
-	while ((ch = nextopt("m:")) != '\0')
-#else
-	while ((ch = getopt(argc, argv, "m:")) != -1)
 #endif
+	while ((ch = getopt(argc, argv, "m:")) != -1)
 		switch(ch) {
 		case 'm':
 			f_mode = 1;
-#ifdef shell
-			modestr = shoptarg;
-#else
 			modestr = optarg;
-#endif
 			break;
 		case '?':
 		default:
 			usage();
 		}
-#ifdef SHELL
-	argc -= argptr - argv;
-	argv = argptr;
-#else
 	argc -= optind;
 	argv += optind;
-#endif
 	if (argv[0] == NULL)
 		usage();
 
@@ -111,10 +96,13 @@ main(int argc, char *argv[])
 		errno = 0;
 		if ((modep = setmode(modestr)) == NULL) {
 			if (errno)
-				err(1, "%s", "setmode");
+				err(1, "setmode");
 			errx(1, "invalid file mode: %s", modestr);
 		}
 		fifomode = getmode(modep, BASEMODE);
+#ifdef SHELL
+		free(__DECONST(char *, modep));
+#endif
 	} else {
 		fifomode = BASEMODE;
 	}
@@ -124,16 +112,12 @@ main(int argc, char *argv[])
 			warn("%s", *argv);
 			exitval = 1;
 		}
-	return(exitval);
+	exit(exitval);
 }
 
 static void
 usage(void)
 {
 	(void)fprintf(stderr, "usage: mkfifo [-m mode] fifo_name ...\n");
-#ifdef SHELL
-	error(NULL);
-#else
 	exit(1);
-#endif
 }

@@ -22,7 +22,7 @@ You can also open the poudriere's manpage, located in the 8th section.
 Support
 -------
 
-IRC:          [#poudriere](https://webchat.freenode.net/?channels=%23poudriere) on freenode  
+IRC:          #poudriere on EFNet
 Mailing list: [freebsd-pkg@FreeBSD.org (lists.freebsd.org)](https://lists.freebsd.org/mailman/listinfo/freebsd-pkg)
 
 Getting started with poudriere
@@ -38,9 +38,4 @@ Getting started with poudriere
 Build status
 ------------------------------
 
-* i386 [![FreeBSD i386](https://jenkins.mouf.net/job/poudriere/label=i386/badge/icon)](https://jenkins.mouf.net/job/poudriere/label=i386)
-* amd64 [![FreeBSD amd64](https://jenkins.mouf.net/job/poudriere/label=amd64/badge/icon)](https://jenkins.mouf.net/job/poudriere/label=amd64)
-* armv6 [![FreeBSD armv6](https://jenkins.mouf.net/job/poudriere/label=armv6/badge/icon)](https://jenkins.mouf.net/job/poudriere/label=armv6)
-* armv7 [![FreeBSD armv7](https://jenkins.mouf.net/job/poudriere/label=armv7/badge/icon)](https://jenkins.mouf.net/job/poudriere/label=armv7)
-* aarch64 [![FreeBSD aarch64](https://jenkins.mouf.net/job/poudriere/label=aarch64/badge/icon)](https://jenkins.mouf.net/job/poudriere/label=aarch64)
-* powerpc64 [![FreeBSD powerpc64](https://jenkins.mouf.net/job/poudriere/label=powerpc64/badge/icon)](https://jenkins.mouf.net/job/poudriere/label=powerpc64)
+* [![Build Status](https://api.cirrus-ci.com/github/freebsd/poudriere.svg?branch=master)](https://cirrus-ci.com/github/freebsd/poudriere)

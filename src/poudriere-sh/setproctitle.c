@@ -29,8 +29,7 @@
 #ifdef SHELL
 #define main setproctitlecmd
 #include "bltin/bltin.h"
-#include <errno.h>
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
+#include "helpers.h"
 #endif
 
 int
@@ -38,7 +37,7 @@ main(int argc, char **argv)
 {
 #ifdef SHELL
 	if (argc != 2)
-		errx(EXIT_USAGE, "%s", "Usage: setproctitle <name>");
+		errx(EX_USAGE, "%s", "Usage: setproctitle <name>");
 
 	setproctitle("%s", argv[1]);
 #endif

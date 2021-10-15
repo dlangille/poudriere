@@ -1,15 +1,8 @@
-#! /bin/sh
-
-THISDIR=$(realpath $(dirname $0))
-PORTSDIR="${THISDIR}/ports-dep-args"
-
 LISTPORTS="ports-mgmt/poudriere-devel-bad-dep_args"
+OVERLAYS="ports-dep-args"
 . common.bulk.sh
 
-${SUDO} ${POUDRIEREPATH} -e ${POUDRIERE_ETC} bulk -n -CNt \
-    -B "${BUILDNAME}" \
-    -j "${JAILNAME}" -p "${PTNAME}" ${SETNAME:+-z "${SETNAME}"} \
-    ${LISTPORTS}
+do_bulk -n ${LISTPORTS}
 assert 1 $? "Invalid DEPENDS_ARGS should be detected"
 
 # Nothing should be queued

@@ -24,6 +24,8 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 
+. ${SCRIPTPREFIX}/common.sh
+
 usage() {
 	cat <<EOF
 poudriere foreachport [options] [-f file] /patch/to/script [args]
@@ -43,15 +45,13 @@ Options:
                    debug output
     -z set      -- Specify which SET to use for packages
 EOF
-	exit 1
+	exit ${EX_USAGE}
 }
 
 PTNAME=default
 SETNAME=""
 DRY_RUN=0
 ALL=1
-
-. ${SCRIPTPREFIX}/common.sh
 
 [ $# -eq 0 ] && usage
 
@@ -72,7 +72,7 @@ while getopts "af:j:J:p:vz:" FLAG; do
 			# a cd / was done.
 			[ "${OPTARG#/}" = "${OPTARG}" ] && \
 			    OPTARG="${SAVED_PWD}/${OPTARG}"
-			LISTPKGS="${LISTPKGS} ${OPTARG}"
+			LISTPKGS="${LISTPKGS:+${LISTPKGS} }${OPTARG}"
 			ALL=0
 			;;
 		n)
@@ -84,7 +84,7 @@ while getopts "af:j:J:p:vz:" FLAG; do
 			PTNAME=${OPTARG}
 			;;
 		v)
-			VERBOSE=$((${VERBOSE} + 1))
+			VERBOSE=$((VERBOSE + 1))
 			;;
 		z)
 			[ -n "${OPTARG}" ] || err 1 "Empty set name"
@@ -124,7 +124,7 @@ PARALLEL_JOBS=${PREPARE_PARALLEL_JOBS}
 exec 3>&1
 exec >&2
 msg "Gathering all expected packages"
-jail_start ${JAILNAME} ${PTNAME} ${SETNAME}
+jail_start "${JAILNAME}" "${PTNAME}" "${SETNAME}"
 #prepare_ports
 bset status "foreachport:"
 

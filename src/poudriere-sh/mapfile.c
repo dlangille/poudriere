@@ -28,6 +28,8 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 
+#include <assert.h>
+#include <err.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -49,8 +51,18 @@
 #define debug(...)
 #endif
 
-/* Defined here to avoid bltin.h redefining FILE */
-static FILE *fp = NULL;
+#include "bltin/bltin.h"
+#include "helpers.h"
+#undef FILE
+#undef fclose
+#undef fdopen
+#undef fflush
+#undef fopen
+#undef fputs
+#include "eval.h"
+#include "trap.h"
+#include "var.h"
+
 #define MAX_FILES 256
 struct mapped_data {
 	FILE *fp;
@@ -59,19 +71,6 @@ struct mapped_data {
 	bool linebuffered;
 };
 static struct mapped_data *mapped_files[MAX_FILES] = {0};
-/* Avoid remallocing every call */
-static char *line = NULL;
-static size_t linecap = BUFSIZ;
-
-#include "bltin/bltin.h"
-#include "options.h"
-#undef tflag
-#undef fflush
-#undef fputs
-#include <errno.h>
-#include "trap.h"
-#include "var.h"
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
 
 static void
 md_close(struct mapped_data *md)
@@ -80,12 +79,14 @@ md_close(struct mapped_data *md)
 
 	debug("%d: Closing %s handle '%d'\n", getpid(),
 	    md->file, md->handle);
+	assert(is_int_on());
 
 	idx = md->handle;
 	md->handle = -1;
 	free(md->file);
 	md->file = NULL;
 	if (md->fp != NULL) {
+		assert(fileno(md->fp) >= 10);
 		fclose(md->fp);
 		md->fp = NULL;
 	}
@@ -100,6 +101,7 @@ md_find(const char *handle)
 	int idx;
 	char *end;
 
+	assert(is_int_on());
 	errno = 0;
 	if (handle == NULL || *handle == '\0')
 		errx(EX_DATAERR, "%s", "Missing handle");
@@ -108,15 +110,16 @@ md_find(const char *handle)
 		errx(EX_DATAERR, "Invalid handle '%s'", handle);
 	md = mapped_files[idx];
 	if (md == NULL || md->handle != idx)
-		errx(EX_DATAERR, "Invalid handle '%s'", handle);
+		errx(EBADF, "Invalid handle '%s'", handle);
 	if (md->fp == NULL)
-		errx(EX_DATAERR, "handle '%s' is not opened", handle);
+		errx(EBADF, "handle '%s' is not opened", handle);
 	return (md);
 }
 
 int
 mapfilecmd(int argc, char **argv)
 {
+	FILE *fp;
 	struct mapped_data *md;
 	struct stat sb;
 	const char *file, *var_return, *modes, *p;
@@ -126,7 +129,8 @@ mapfilecmd(int argc, char **argv)
 
 	fp = NULL;
 	if (argc != 3 && argc != 4)
-		errx(EXIT_USAGE, "%s", "Usage: mapfile <handle_name> <file> [modes]");
+		errx(EX_USAGE, "%s", "Usage: mapfile <handle_name> <file> [modes]");
+	INTOFF;
 	nextidx = -1;
 	for (idx = 0; idx < MAX_FILES; idx++) {
 		if (mapped_files[idx] == NULL) {
@@ -134,8 +138,10 @@ mapfilecmd(int argc, char **argv)
 			break;
 		}
 	}
-	if (mapped_files[nextidx] != NULL)
+	if (nextidx == -1 || mapped_files[nextidx] != NULL) {
+		INTON;
 		errx(EX_SOFTWARE, "%s", "mapped files stack exceeded");
+	}
 
 	file = argv[2];
 	var_return = argv[1];
@@ -145,7 +151,12 @@ mapfilecmd(int argc, char **argv)
 	else
 		modes = "re";
 
-	INTOFF;
+	if (strchr(modes, 'B') && !(strchr(modes, 'w') || strchr(modes, '+') ||
+	    strchr(modes, 'a'))) {
+	    INTON;
+	    errx(EX_USAGE, "%s", "using 'B' without writing makes no sense");
+	}
+
 	if ((fp = fopen(file, modes)) == NULL) {
 		serrno = errno;
 		INTON;
@@ -159,7 +170,8 @@ mapfilecmd(int argc, char **argv)
 		errno = serrno;
 		err(EX_OSERR, "%s", "fstat");
 	}
-	if (!(S_ISFIFO(sb.st_mode) || S_ISREG(sb.st_mode))) {
+	if (!(S_ISFIFO(sb.st_mode) || S_ISREG(sb.st_mode) ||
+	    S_ISCHR(sb.st_mode))) {
 		serrno = errno;
 		fclose(fp);
 		INTON;
@@ -189,6 +201,7 @@ mapfilecmd(int argc, char **argv)
 			errno = serrno;
 			err(EX_NOINPUT, "%s", "fcntl");
 		}
+		assert(newfd >= 10);
 		(void)fclose(fp);
 		if ((fp = fdopen(newfd, dupmodes)) == NULL) {
 			serrno = errno;
@@ -204,12 +217,11 @@ mapfilecmd(int argc, char **argv)
 	md->linebuffered = strchr(modes, 'B') == NULL;
 
 	mapped_files[md->handle] = md;
-	INTON;
-
 	snprintf(handle, sizeof(handle), "%d", md->handle);
 	setvar(var_return, handle, 0);
 	debug("%d: Mapped %s to handle '%s' modes '%s'\n", getpid(),
 	    md->file, handle, modes);
+	INTON;
 
 	return (0);
 }
@@ -227,13 +239,17 @@ mapfile_readcmd(int argc, char **argv)
 	ssize_t linelen;
 	double timeout;
 	int ch, ret, serrno, sig, tflag;
+	/* Avoid remallocing every call */
+	static char *line = NULL;
+	/* Start a bit larger to avoid needing reallocs in children. */
+	static size_t linecap = 4096;
 
 	ifs = NULL;
 	timeout = 0;
 	tflag = 0;
 
 	if (argc < 2)
-		errx(EXIT_USAGE, "%s", "Usage: mapfile_read <handle> "
+		errx(EX_USAGE, "%s", "Usage: mapfile_read <handle> "
 		    "[-t timeout] <output_var> ...");
 
 	handle = argv[1];
@@ -278,9 +294,10 @@ mapfile_readcmd(int argc, char **argv)
 	argv = argptr;
 
 	if (argc < 1)
-		errx(EXIT_USAGE, "%s", "Usage: mapfile_read <handle> "
+		errx(EX_USAGE, "%s", "Usage: mapfile_read <handle> "
 		    "[-t timeout] <output_var> ...");
 
+	INTOFF;
 	md = md_find(handle);
 
 	var_return_ptr = &argv[0];
@@ -291,10 +308,14 @@ mapfile_readcmd(int argc, char **argv)
 
 	linelen = -1;
 	/* Malloc once per sh process.  getline(3) may grow it. */
-	if (line == NULL)
+	if (line == NULL) {
 	    line = malloc(linecap);
+	    if (line == NULL) {
+		    INTON;
+		    err(EX_TEMPFAIL, "malloc");
+	    }
+	}
 
-	INTOFF;
 	flags = 0;
 	ret = 0;
 	if (tflag) {
@@ -334,7 +355,7 @@ mapfile_readcmd(int argc, char **argv)
 			case -1:
 				debug("%d: SELECT error getline %s errno %d\n",
 				    getpid(), handle, errno);
-				ret = 1;
+				ret = EX_IOERR;
 				warn("%s", "select");
 				goto out;
 			}
@@ -371,17 +392,26 @@ out:
 	/* Don't close on EOF or timeout as more data may come later. */
 	if (ret != 1 && ret != 0 && ret != 142)
 		md_close(md);
-	INTON;
 
-	if (linelen == -1)
+	if (linelen == -1) {
 		line[0] = '\0';
-	else {
+	} else if (feof(md->fp)) {
+		/*
+		 * EOF without newline.
+		 * EOF with newline is handled above.
+		 */
+		assert(ret == 0);
+		assert(line[linelen - 1] != '\n');
+		assert(ferror(md->fp) == 0);
+		ret = 1; /* EOF */
+		clearerr(md->fp);
+	} else {
 		/* Remove newline. */
 		line[linelen - 1] = '\0';
 		--linelen;
 	}
 	linep = line;
-	if (ifs == NULL && (ifs = bltinlookup("IFS", 1)) == NULL)
+	if (ifs == NULL && (ifs = getenv("IFS")) == NULL)
 		ifs = " \t\n";
 	ifsp = NULL;
 	while (linelen != -1 && linep - line < linelen) {
@@ -415,6 +445,7 @@ out:
 			break;
 		}
 	}
+	INTON;
 
 	/* Set any remaining args to "" */
 	while (*var_return_ptr != NULL)
@@ -430,33 +461,27 @@ mapfile_closecmd(int argc, char **argv)
 	const char *handle;
 
 	if (argc != 2)
-		errx(EXIT_USAGE, "%s", "Usage: mapfile_close <handle>");
+		errx(EX_USAGE, "%s", "Usage: mapfile_close <handle>");
 	handle = argv[1];
+	INTOFF;
 	md = md_find(handle);
 	md_close(md);
+	INTON;
 
 	return (0);
 }
 
-int
-mapfile_writecmd(int argc, char **argv)
+static int
+_mapfile_write(/*XXX const*/ struct mapped_data *md, const char *handle,
+    const int nflag, const char *data)
 {
-	struct mapped_data *md;
-	const char *handle, *data;
-	int serrno;
+	int serrno, ret;
 
-	if (argc != 3)
-		errx(EXIT_USAGE, "%s", "Usage: mapfile_write <handle> <data>");
-
-	handle = argv[1];
-	md = md_find(handle);
-	data = argv[2];
-
-	INTOFF;
+	ret = 0;
 	debug("%d: Writing to %s for handle '%s' fd: %d: %s\n",
 	    getpid(), md->file, handle, fileno(md->fp), data);
 	if (fputs(data, md->fp) == EOF ||
-	    fputc('\n', md->fp) == EOF ||
+	    (!nflag && fputc('\n', md->fp) == EOF) ||
 	    (md->linebuffered && fflush(md->fp) == EOF) ||
 	    ferror(md->fp)) {
 		serrno = errno;
@@ -467,14 +492,70 @@ mapfile_writecmd(int argc, char **argv)
 		md_close(md);
 		INTON;
 		if (serrno == EPIPE)
-			return (EPIPE);
-		if (serrno == EINTR)
-			return (1);
+			ret = EPIPE;
+		else if (serrno == EINTR)
+			ret = 1;
+		else
+			ret = EX_IOERR;
 		errno = serrno;
-		err(EX_IOERR, "failed to write to handle '%s' mapped to %s",
+		INTON;
+		err(ret, "failed to write to handle '%s' mapped to %s",
 		    handle, md->file);
 	}
+	return (ret);
+}
+
+int evalcmd(int argc, char **argv);
+
+int
+mapfile_writecmd(int argc, char **argv)
+{
+	struct mapped_data *md;
+	const char *handle, *data;
+	int ch, nflag, ret;
+
+	if (argc < 2)
+		errx(EX_USAGE, "%s", "Usage: mapfile_write <handle> [-n] "
+		    "<data>");
+	nflag = 0;
+	handle = argv[1];
+	argptr += 1;
+	argc -= argptr - argv;
+	argv = argptr;
+	while ((ch = nextopt("n")) != '\0') {
+		switch (ch) {
+		case 'n':
+			nflag = 1;
+			break;
+		}
+	}
+	argc -= argptr - argv;
+	argv = argptr;
+	INTOFF;
+	md = md_find(handle);
+	if (argc == 1) {
+		data = argv[0];
+		ret = _mapfile_write(md, handle, nflag, data);
+	} else {
+		/* Read from TTY */
+		char *value;
+		/*
+		 * XXX: Using shell mapfile_cat until some changes from
+		 * copool branch make it in to avoid massive conflicts
+		 */
+		const char *cmd = "__mapfile_write_cat=$(mapfile_cat)";
+
+		evalstring(cmd, 0);
+		if (exitstatus != 0) {
+			ret = exitstatus;
+			goto out;
+		}
+		value = lookupvar("__mapfile_write_cat");
+		assert(value != NULL);
+		ret = _mapfile_write(md, handle, nflag, value);
+	}
+out:
 	INTON;
 
-	return (0);
+	return (ret);
 }

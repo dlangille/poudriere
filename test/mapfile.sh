@@ -1,9 +1,10 @@
-#! /bin/sh
-
+set -e
 . common.sh
 . ${SCRIPTPREFIX}/include/hash.sh
 . ${SCRIPTPREFIX}/include/parallel.sh
 . ${SCRIPTPREFIX}/include/util.sh
+set +e
+
 JAILED=$(sysctl -n security.jail.jailed 2>/dev/null || echo 0)
 
 LINES=20
@@ -34,8 +35,8 @@ writer() {
 	n=0
 	until [ $n -eq ${LINES} ]; do
 		case ${type} in
-		pipe) echo "${n}" ;;
-		mapfile) mapfile_write "${out}" "${n}" ;;
+		pipe) echo "${n}\\" ;;
+		mapfile) mapfile_write "${out}" "${n}\\" ;;
 		esac
 		n=$((n + 1))
 	done
@@ -75,11 +76,11 @@ if mapfile_builtin; then
 	until [ $n -eq ${LINES} ]; do
 		mapfile_read "${handle1}" line
 		assert 0 $? "mapfile_read handle1 should succeed line $n"
-		assert "$n" "$line" "mapfile_read handle1 should match line $n"
+		assert "${n}\\" "$line" "mapfile_read handle1 should match line $n"
 
 		mapfile_read "${handle2}" line
 		assert 0 $? "mapfile_read handle2 should succeed line $n"
-		assert "$n" "$line" "mapfile_read handle2 should match line $n"
+		assert "${n}\\" "$line" "mapfile_read handle2 should match line $n"
 
 		n=$((n + 1))
 	done
@@ -161,13 +162,13 @@ if mapfile_builtin; then
 	assert " test   1 2 3 " "${line}" "mapfile_read IFS= should match line 2"
 	assert "" "${extra}" "mapfile_read IFS= should match extra 2"
 
-	# IFS mode
-	mapfile_write "${file_out}" " test   1 2 3 "
+	# IFS mode and default read -r behavior
+	mapfile_write "${file_out}" " t\\est   1 2 3 "
 	assert 0 $? "mapfile_write to standard file_out should pass"
 	extra="blah"
 	mapfile_read "${file_in}" line extra
 	assert 0 $? "mapfile_read from standard file_in to 2.1 var should pass"
-	assert "test" "${line}" "mapfile_read should match line 2.1"
+	assert "t\\est" "${line}" "mapfile_read should match line 2.1"
 	assert "1 2 3" "${extra}" "mapfile_read should match extra 2.1"
 
 	mapfile_write "${file_out}" "test 1 2 3"
@@ -201,8 +202,38 @@ if mapfile_builtin; then
 	assert "4" "${nothing}" "mapfile_read should clear nothing 4+"
 	assert "" "${in}" "mapfile_read should clear in 4+"
 	assert "" "${here}" "mapfile_read should clear here 4+"
+
+	assert_ret 0 mapfile_close "${file_in}"
+	assert_ret 0 mapfile_close "${file_out}"
 }
 fi
+
+# Should only return full lines as read(1) does
+{
+	rm -f "${TMP}"
+	TMP=$(mktemp -t mapfile)
+	mapfile file_in "${TMP}" "re"
+	assert 0 $? "mapfile to standard file_in should pass"
+	assert_not "" "${file_in}" "mapfile file_in should return handle"
+
+	echo -n "blah" > "${TMP}"
+	mapfile_read "${file_in}" output
+	assert 1 "$?" "read without newline should return EOF"
+	assert "blah" "${output}" "output should match"
+
+	if mapfile_keeps_file_open_on_eof "${file_in}"; then
+		echo "" >> "${TMP}"
+		mapfile_read "${file_in}" output
+		assert 0 "$?" "read after newline (without rewind) should return success"
+		assert '' "${output}" "output should be empty"
+
+		echo "foo" >> "${TMP}"
+		mapfile_read "${file_in}" output
+		assert 0 "$?" "read after newline (without rewind) should succeed"
+		assert 'foo' "${output}" "output should match"
+	fi
+	assert_ret 0 mapfile_close "${file_in}"
+}
 
 # Test mapfile_read_loop
 {
@@ -366,17 +397,60 @@ fi
 		echo "INNER 2: n=$n y=$y" >&2
 		assert "''$i''" "$n" "value should match double quoted 6 $i"
 		assert "''$((i + 5))''" "$y" "value should match double quoted 6 $((i + 5))"
-		touch "${TDIR}/${i}"
+		touch "${TDIR:?}/${i}"
 		i=$((i + 1))
 	done
 	i=0
 	until [ ${i} -eq 10 ]; do
-		[ -e "${TDIR}/${i}" ]
-		assert 0 $? "inner loop did not run i=$i; found: $(/bin/ls ${TDIR}):"
+		[ -e "${TDIR:?}/${i}" ]
+		assert 0 $? "inner loop did not run i=$i; found: $(/bin/ls ${TDIR})"
 		i=$((i + 1))
 	done
 	fds=$(procstat -f $$|wc -l)
 	[ ${JAILED} -eq 0 ] && assert "${expectedfds}" "${fds}" "fd leak 7"
 	rm -rf "${TDIR}"
 }
+
+{
+	TMP=$(mktemp -t mapfile)
+	TMP2=$(mktemp -t mapfile)
+
+	ps uaxwd > "${TMP}"
+
+	:>"${TMP2}"
+	assert_ret 0 mapfile handle "${TMP2}" "we"
+	cat "${TMP}" | mapfile_write "${handle}"
+	assert_ret 0 mapfile_close "${handle}"
+	assert_ret 0 diff -u "${TMP}" "${TMP2}"
+
+	rm -f "${TMP2}"
+	:>"${TMP2}"
+	assert_ret 0 mapfile handle "${TMP2}" "we"
+	mapfile_write "${handle}" <<-EOF
+	$(cat "${TMP}")
+	EOF
+	assert_ret 0 mapfile_close "${handle}"
+	assert_ret 0 diff -u "${TMP}" "${TMP2}"
+
+	rm -f "${TMP}" "${TMP2}"
+}
+
+{
+	TMP=$(mktemp -t mapfile)
+	TMP2=$(mktemp -t mapfile)
+
+	ps uaxwd > "${TMP}"
+
+	{ cat "${TMP}"; rm -f "${TMP2}"; } | write_atomic "${TMP2}"
+	assert_ret 0 diff -u "${TMP}" "${TMP2}"
+
+	rm -f "${TMP2}"
+	write_atomic "${TMP2}" <<-EOF
+	$(cat "${TMP}"; rm -f "${TMP2}")
+	EOF
+	assert_ret 0 diff -u "${TMP}" "${TMP2}"
+
+	rm -f "${TMP}" "${TMP2}"
+}
+
 exit 0

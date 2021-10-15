@@ -33,12 +33,14 @@
  * A cleanup, misc options and mkdtemp() calls were added to try and work
  * more like the OpenBSD version - which was first to publish the interface.
  */
+#include <sys/param.h>
 
 #include <err.h>
 #include <paths.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sysexits.h>
 #include <unistd.h>
 
 #ifndef lint
@@ -49,18 +51,18 @@ static const char rcsid[] =
 static void usage(void);
 
 #ifdef SHELL
-#define main mktempcmd
+#define main _mktemp_internal
 #include "bltin/bltin.h"
-#include "options.h"
-#undef uflag
 #include "var.h"
-#include <errno.h>
-#define getenv(var) bltinlookup(var, 1)
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
+#include "helpers.h"
 #endif
 
 int
+#ifdef SHELL
+main(int argc, char **argv, char output_str[MAXPATHLEN])
+#else
 main(int argc, char **argv)
+#endif
 {
 	int c, fd, ret;
 	char *tmpdir;
@@ -72,11 +74,7 @@ main(int argc, char **argv)
 	prefix = "mktemp";
 	name = NULL;
 
-#ifdef SHELL
-	while ((c = nextopt("dqt:u")) != '\0')
-#else
 	while ((c = getopt(argc, argv, "dqt:u")) != -1)
-#endif
 		switch (c) {
 		case 'd':
 			dflag++;
@@ -87,11 +85,7 @@ main(int argc, char **argv)
 			break;
 
 		case 't':
-#ifdef SHELL
-			prefix = shoptarg;
-#else
 			prefix = optarg;
-#endif
 			tflag++;
 			break;
 
@@ -103,13 +97,8 @@ main(int argc, char **argv)
 			usage();
 		}
 
-#ifdef SHELL
-	argc -= argptr - argv;
-	argv = argptr;
-#else
 	argc -= optind;
 	argv += optind;
-#endif
 
 	if (!tflag && argc < 1) {
 		tflag = 1;
@@ -118,12 +107,18 @@ main(int argc, char **argv)
 
 	if (tflag) {
 		tmpdir = getenv("TMPDIR");
+#ifdef SHELL
+		INTOFF;
+#endif
 		if (tmpdir == NULL)
 			asprintf(&name, "%s%s.XXXXXXXX", _PATH_TMP, prefix);
 		else
 			asprintf(&name, "%s/%s.XXXXXXXX", tmpdir, prefix);
 		/* if this fails, the program is in big trouble already */
 		if (name == NULL) {
+#ifdef SHELL
+			INTON;
+#endif
 			if (qflag)
 				return (1);
 			else
@@ -134,6 +129,9 @@ main(int argc, char **argv)
 	/* generate all requested files */
 	while (name != NULL || argc > 0) {
 		if (name == NULL) {
+#ifdef SHELL
+			INTOFF;
+#endif
 			name = strdup(argv[0]);
 			argv++;
 			argc--;
@@ -145,29 +143,86 @@ main(int argc, char **argv)
 				if (!qflag)
 					warn("mkdtemp failed on %s", name);
 			} else {
+#ifdef SHELL
+				strlcpy(output_str, name, MAXPATHLEN);
+#else
 				printf("%s\n", name);
+#endif
 				if (uflag)
 					rmdir(name);
 			}
 		} else {
+#ifdef SHELL
+			INTOFF;
+#endif
 			fd = mkstemp(name);
 			if (fd < 0) {
+#ifdef SHELL
+				INTON;
+#endif
 				ret = 1;
 				if (!qflag)
 					warn("mkstemp failed on %s", name);
 			} else {
 				close(fd);
+#ifdef SHELL
+				INTON;
+#endif
 				if (uflag)
 					unlink(name);
+#ifdef SHELL
+				strlcpy(output_str, name, MAXPATHLEN);
+#else
 				printf("%s\n", name);
+#endif
 			}
 		}
-		if (name)
+		if (name) {
 			free(name);
+#ifdef SHELL
+			INTON;
+#endif
+		}
 		name = NULL;
 	}
 	return (ret);
 }
+
+#ifdef SHELL
+int
+mktempcmd(int argc, char **argv)
+{
+	char output_str[MAXPATHLEN];
+	int error;
+
+	error = _mktemp_internal(argc, argv, output_str);
+	if (error != 0)
+		return (error);
+	printf("%s\n", output_str);
+	return (0);
+}
+
+int
+_mktempcmd(int argc, char **argv)
+{
+	char output_str[MAXPATHLEN], *var_return;
+	int error;
+
+	if (argc < 3)
+		errx(EX_USAGE, "%s", "Usage: _mktemp <var_return> "
+		    "mktemp(1) params...");
+	var_return = argv[1];
+	argptr += 1;
+	argc -= argptr - argv;
+	argv = argptr;
+
+	error = _mktemp_internal(argc, argv, output_str);
+	if (error != 0)
+		return (error);
+	setvar(var_return, output_str, 0);
+	return (0);
+}
+#endif
 
 static void
 usage(void)
@@ -176,9 +231,5 @@ usage(void)
 		"usage: mktemp [-d] [-q] [-t prefix] [-u] template ...\n");
 	fprintf(stderr,
 		"       mktemp [-d] [-q] [-u] -t prefix \n");
-#ifdef SHELL
-	error(NULL);
-#else
 	exit (1);
-#endif
 }

@@ -24,7 +24,9 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "config.h"
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 
 #include <sys/types.h>
 #include <sys/event.h>
@@ -117,7 +119,7 @@ client_read(struct client *cl)
 	nvlist_t *nv;
 	int type;
 	const nvlist_t *args;
-	const char *username, *command, *arg;
+	const char *username, *arg;
 	int fdout, fderr, fdin;
 	void *cookie;
 	pid_t pid;
@@ -131,7 +133,6 @@ client_read(struct client *cl)
 		username = nvlist_get_string(nv, "user");
 	else
 		username = "root";
-	command = nvlist_get_string(nv, "command");
 	fderr = nvlist_take_descriptor(nv, "stderr");
 	fdout = nvlist_take_descriptor(nv, "stdout");
 	fdin = nvlist_take_descriptor(nv, "stdin");
@@ -282,7 +283,7 @@ serve(int fd) {
 	for (;;) {
 		kevent(kq, NULL, 0, &ke, 1, NULL);
 		/* New client */
-		if (ke.ident == fd && ke.filter == EVFILT_READ) {
+		if ((int)ke.ident == fd && ke.filter == EVFILT_READ) {
 			cl = client_accept(ke.ident);
 			if (cl != NULL) {
 				EV_SET(&ke, cl->fd, EVFILT_READ, EV_ADD, 0, 0, cl);
@@ -413,7 +414,7 @@ main(int argc, char **argv)
 	snprintf(path, sizeof(path), "%s/%s.sock", dir, jailname);
 	unlink(path);
 	un.sun_family = AF_UNIX;
-	if (chdir(dirname(path)))
+	if (chdir(dir))
 		err(EXIT_FAILURE, "chdir()");
 	strlcpy(un.sun_path, basename(path), sizeof(un.sun_path));
 	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (int[]){1},

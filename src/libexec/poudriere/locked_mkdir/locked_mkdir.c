@@ -30,6 +30,10 @@
  * locking shell functions. Based on lockf(1).
  */
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
+
 #include <sys/param.h>
 #include <sys/types.h>
 #include <sys/event.h>
@@ -39,6 +43,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <libgen.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -47,36 +52,52 @@
 #include <sysexits.h>
 #include <unistd.h>
 
+#ifndef HAVE_FUNLINKAT
+#define funlinkat(dfd, path, fd, flag) unlinkat(dfd, path, flag)
+#endif
+
 #ifdef SHELL
 #define main locked_mkdircmd
 #include "bltin/bltin.h"
 #include "helpers.h"
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
+#undef FILE
 #undef fclose
+#undef fdopen
 #undef fopen
 #undef fprintf
-#undef FILE
 #endif
 
+static int dirfd = -1;
 static int lockfd = -1;
 static volatile sig_atomic_t timed_out;
+#ifdef SHELL
+static int did_sigalrm;
+#endif
 static struct sigaction oact;
 #ifdef SHELL
 static struct sigdata oinfo;
 #endif
+
+static void cleanup(void);
 
 /*
  * Try to acquire a lock on the given file, creating the file if
  * necessary.  Returns an open file descriptor on success, or -1 on failure.
  */
 static int
-acquire_lock(const char *name)
+acquire_lock(const int dirfd, const char *name)
 {
 	int fd;
 
-	if ((fd = open(name, O_CREAT|O_RDONLY|O_EXLOCK, 0666)) == -1) {
+	if ((fd = openat(dirfd, name,
+	    O_CREAT | O_RDONLY | O_EXLOCK | O_CLOEXEC,
+	    0666)) == -1) {
 		if (errno == EAGAIN || errno == EINTR)
 			return (-1);
+#ifdef SHELL
+		cleanup();
+		INTON;
+#endif
 		err(EX_CANTCREAT, "cannot open %s", name);
 	}
 	return (fd);
@@ -93,13 +114,18 @@ cleanup(void)
 
 	serrno = errno;
 #endif
+	if (dirfd != -1) {
+		close(dirfd);
+		dirfd = -1;
+	}
 	if (lockfd != -1) {
 		flock(lockfd, LOCK_UN);
 		close(lockfd);
 		lockfd = -1;
 	}
 #ifdef SHELL
-	sigaction(SIGALRM, &oact, NULL);
+	if (did_sigalrm == 1)
+		sigaction(SIGALRM, &oact, NULL);
 	trap_pop(SIGINFO, &oinfo);
 	errno = serrno;
 #endif
@@ -109,59 +135,94 @@ cleanup(void)
  * Write the given pid while holding the flock.
  */
 static void
-write_pid(const char *dirpath, pid_t writepid)
+write_pid(const int dirfd, const char *lockdirpath, pid_t writepid)
 {
 	FILE *f;
 	char pidpath[MAXPATHLEN];
+	int fd, serrno;
 
 	if (writepid == -1)
 		return;
-
 	/* XXX: Could probably store this in the .flock file */
-	snprintf(pidpath, sizeof(pidpath), "%s.pid", dirpath);
-	if ((f = fopen(pidpath, "w")) == NULL) {
+	snprintf(pidpath, sizeof(pidpath), "%s.pid", lockdirpath);
+
+	/* Protected by the flock */
+	fd = openat(dirfd, pidpath,
+	    O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NONBLOCK,
+	    0666);
+	if (fd == -1) {
+		serrno = errno;
+		(void)unlinkat(dirfd, pidpath, 0);
+		(void)unlinkat(dirfd, lockdirpath, AT_REMOVEDIR);
 #ifdef SHELL
 		cleanup();
 		INTON;
 #endif
-		err(1, "%s", "fopen(pid)");
+		errno = serrno;
+		err(1, "openat(%s): %s", lockdirpath, pidpath);
+	}
+	if ((f = fdopen(fd, "w")) == NULL) {
+		serrno = errno;
+		close(fd);
+		(void)funlinkat(dirfd, pidpath, fd, 0);
+		(void)unlinkat(dirfd, lockdirpath, AT_REMOVEDIR);
+#ifdef SHELL
+		cleanup();
+		INTON;
+#endif
+		errno = serrno;
+		err(1, "fdopen: %s", pidpath);
 	}
 
 	if (fprintf(f, "%u", writepid) < 0) {
+		serrno = errno;
+		(void)funlinkat(dirfd, pidpath, fd, 0);
+		(void)unlinkat(dirfd, lockdirpath, AT_REMOVEDIR);
 #ifdef SHELL
 		fclose(f);
 		cleanup();
 		INTON;
 #endif
+		errno = serrno;
 		err(1, "%s", "fprintf(pid)");
 	}
 
 	if (fclose(f) != 0) {
+		serrno = errno;
+		(void)funlinkat(dirfd, pidpath, fd, 0);
+		(void)unlinkat(dirfd, lockdirpath, AT_REMOVEDIR);
 #ifdef SHELL
 		cleanup();
 		INTON;
 #endif
+		errno = serrno;
 		err(1, "%s", "fclose(pid)");
 	}
 }
 
 static bool
-stale_lock(const char *dirpath, pid_t *outpid)
+stale_lock(const int dirfd, const char *lockdirpath, pid_t *outpid)
 {
 	FILE *f;
 	char pidpath[MAXPATHLEN], pidbuf[16];
 	char *end;
 	pid_t pid;
 	bool stale;
+	int fd;
 
 	f = NULL;
 	stale = true;
 	pid = -1;
 	/* XXX: Could probably store this in the .flock file */
-	snprintf(pidpath, sizeof(pidpath), "%s.pid", dirpath);
+	snprintf(pidpath, sizeof(pidpath), "%s.pid", lockdirpath);
 	/* Missing file is considered stale. */
-	if ((f = fopen(pidpath, "r")) == NULL)
+	fd = openat(dirfd, pidpath, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+	if (fd == -1)
 		goto done;
+	if ((f = fdopen(fd, "r")) == NULL) {
+		close(fd);
+		goto done;
+	}
 
 	/* Read failure is fatal. */
 	if (fgets(pidbuf, sizeof(pidbuf), f) == NULL) {
@@ -189,8 +250,7 @@ done:
 		 * the flock.
 		 */
 		if (f != NULL)
-			(void)unlink(pidpath);
-		(void)rmdir(dirpath);
+			(void)funlinkat(dirfd, pidpath, fd, 0);
 	}
 	if (f != NULL)
 		fclose(f);
@@ -216,24 +276,28 @@ main(int argc, char **argv)
 	struct sigaction act;
 	struct kevent event[2];
 	struct timespec timeout;
-	const char *path;
+	const char *lockdirpath, *dirpath;
 	char *end;
-	char flock[MAXPATHLEN];
-	int kq, fd, waitsec, nevents;
+	char pathbuf[MAXPATHLEN], dirbuf[MAXPATHLEN], basebuf[MAXPATHLEN];
+	int kq, lockdirfd, waitsec, nevents;
 	pid_t writepid, lockpid;
 #ifdef SHELL
 	int serrno;
 
+	dirfd = -1;
 	lockfd = -1;
 	timed_out = 0;
+	did_sigalrm = 0;
 #endif
+	lockdirfd = -1;
 	lockpid = -1;
 
 	if (argc != 3 && argc != 4)
 		errx(1, "Usage: <timeout> <directory> [pid]");
 
 	waitsec = atoi(argv[1]);
-	path = argv[2];
+	lockdirpath = argv[2];
+
 	if (argc == 4) {
 		errno = 0;
 		writepid = strtol(argv[3], &end, 10);
@@ -247,17 +311,35 @@ main(int argc, char **argv)
 	INTOFF;
 	trap_push(SIGINFO, &oinfo);
 #endif
+	strlcpy(dirbuf, lockdirpath, sizeof(dirbuf));
+	dirpath = dirname(dirbuf);
+	dirfd = open(dirpath, O_RDONLY | O_DIRECTORY);
+	if (dirfd == -1) {
+#ifdef SHELL
+		serrno = errno;
+		cleanup();
+		INTON;
+		errno = serrno;
+#endif
+		err(1, "%s", "opendir");
+	}
+	strlcpy(basebuf, lockdirpath, sizeof(basebuf));
+	lockdirpath = basename(basebuf);
+
 	act.sa_handler = sig_timeout;
 	sigemptyset(&act.sa_mask);
 	act.sa_flags = 0;	/* Note that we do not set SA_RESTART. */
+#ifdef SHELL
+	did_sigalrm = 1;
+#endif
 	sigaction(SIGALRM, &act, &oact);
 	alarm(waitsec);
 
 	/* Open a file lock to serialize other locked_mkdir processes. */
-	snprintf(flock, sizeof(flock), "%s.flock", path);
+	snprintf(pathbuf, sizeof(pathbuf), "%s.flock", lockdirpath);
 
 	while (lockfd == -1 && !timed_out)
-		lockfd = acquire_lock(flock);
+		lockfd = acquire_lock(dirfd, pathbuf);
 	waitsec = alarm(0);
 	if (lockfd == -1) {		/* We failed to acquire the lock. */
 #ifdef SHELL
@@ -274,29 +356,35 @@ main(int argc, char **argv)
 #endif
 retry:
 	/* Try creating the directory. */
-	fd = open(path, O_RDONLY);
-	if (fd == -1 && errno == ENOENT) {
-		if (mkdir(path, S_IRWXU) == 0) {
-			write_pid(path, writepid);
+	if (mkdirat(dirfd, lockdirpath, S_IRWXU) == 0)
+		goto success;
+	else if (errno != EEXIST) {
 #ifdef SHELL
-			cleanup();
-			INTON;
+		cleanup();
+		INTON;
 #endif
-			return (0);
-		}
-		if (errno != EEXIST) {
-#ifdef SHELL
-			cleanup();
-			INTON;
-#endif
-			err(1, "%s", "mkdir()");
-		}
+		err(EX_CANTCREAT, "mkdirat(%s): %s", dirpath, lockdirpath);
 	}
 
 	/* Failed, the directory already exists. */
 	/* If a pid was given then check for a stale lock. */
-	if (writepid != -1 && stale_lock(path, &lockpid))
+	if (writepid != -1 && stale_lock(dirfd, lockdirpath, &lockpid)) {
+		/* The last owner is gone. Take ownership. */
+		goto success;
+	}
+
+	lockdirfd = openat(dirfd, lockdirpath,
+	    O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+	/* It was deleted while we did a stale check */
+	if (lockdirfd == -1 && errno == ENOENT)
 		goto retry;
+	else if (lockdirfd == -1) {
+#ifdef SHELL
+		cleanup();
+		INTON;
+#endif
+		err(1, "openat(%s): %s", dirpath, lockdirpath);
+	}
 
 	timeout.tv_sec = waitsec;
 	timeout.tv_nsec = 0;
@@ -304,7 +392,7 @@ retry:
 	if ((kq = kqueue()) == -1) {
 #ifdef SHELL
 		serrno = errno;
-		close(fd);
+		close(lockdirfd);
 		cleanup();
 		INTON;
 		errno = serrno;
@@ -313,7 +401,7 @@ retry:
 	}
 
 	nevents = 0;
-	EV_SET(&event[nevents++], fd, EVFILT_VNODE, EV_ADD | EV_ENABLE |
+	EV_SET(&event[nevents++], lockdirfd, EVFILT_VNODE, EV_ADD | EV_ENABLE |
 	    EV_ONESHOT, NOTE_DELETE, 0, NULL);
 	if (writepid != -1 && lockpid != -1) {
 		EV_SET(&event[nevents++], lockpid, EVFILT_PROC,
@@ -326,7 +414,7 @@ retry:
 #ifdef SHELL
 		serrno = errno;
 		close(kq);
-		close(fd);
+		close(lockdirfd);
 		cleanup();
 		INTON;
 		errno = serrno;
@@ -337,11 +425,11 @@ retry:
 		/* Timeout */
 #ifdef SHELL
 		close(kq);
-		close(fd);
+		close(lockdirfd);
 		cleanup();
 		INTON;
 #endif
-		return (1);
+		return (EX_TEMPFAIL);
 		/* NOTREACHED */
 	    default:
 		break;
@@ -349,20 +437,24 @@ retry:
 #ifdef SHELL
 	close(kq);
 #endif
-	close(fd);
 
 	/* If the dir was deleted then we can recreate it. */
 	if (event[0].filter == EVFILT_VNODE &&
 	    /* This is expected to succeed. */
-	    mkdir(path, S_IRWXU) != 0) {
+	    mkdirat(dirfd, lockdirpath, S_IRWXU) != 0) {
 #ifdef SHELL
+		serrno = errno;
+		close(lockdirfd);
 		cleanup();
 		INTON;
+		errno = serrno;
 #endif
-		err(1, "%s", "mkdir()");
+		err(1, "mkdirat(%s): %s", dirpath, lockdirpath);
 	}
-
-	write_pid(path, writepid);
+success:
+	if (lockdirfd != -1)
+		close(lockdirfd);
+	write_pid(dirfd, lockdirpath, writepid);
 
 #ifdef SHELL
 	cleanup();

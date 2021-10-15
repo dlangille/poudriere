@@ -59,10 +59,7 @@ static void	usage(void);
 #ifdef SHELL
 #define main mkdircmd
 #include "bltin/bltin.h"
-#include "options.h"
-#undef vflag
-#include <errno.h>
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
+#include "helpers.h"
 #endif
 
 static int	vflag;
@@ -79,17 +76,11 @@ main(int argc, char *argv[])
 	mode = NULL;
 #ifdef SHELL
 	vflag = 0;
-	while ((ch = nextopt("m:pv")) != '\0')
-#else
-	while ((ch = getopt(argc, argv, "m:pv")) != -1)
 #endif
+	while ((ch = getopt(argc, argv, "m:pv")) != -1)
 		switch(ch) {
 		case 'm':
-#ifdef SHELL
-			mode = shoptarg;
-#else
 			mode = optarg;
-#endif
 			break;
 		case 'p':
 			pflag = 1;
@@ -102,13 +93,8 @@ main(int argc, char *argv[])
 			usage();
 		}
 
-#ifdef SHELL
-	argc -= argptr - argv;
-	argv = argptr;
-#else
 	argc -= optind;
 	argv += optind;
-#endif
 	if (argv[0] == NULL)
 		usage();
 
@@ -150,7 +136,7 @@ main(int argc, char *argv[])
 			exitval = 1;
 		}
 	}
-	return(exitval);
+	exit(exitval);
 }
 
 
@@ -237,9 +223,5 @@ usage(void)
 
 	(void)fprintf(stderr,
 	    "usage: mkdir [-pv] [-m mode] directory_name ...\n");
-#ifdef SHELL
-	error(NULL);
-#else
 	exit (EX_USAGE);
-#endif
 }

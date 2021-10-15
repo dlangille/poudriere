@@ -42,9 +42,7 @@ static void usage(void) __dead2;
 #ifdef SHELL
 #define main realpathcmd
 #include "bltin/bltin.h"
-#include "options.h"
-#include <errno.h>
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
+#include "helpers.h"
 #endif
 
 int
@@ -56,11 +54,7 @@ main(int argc, char *argv[])
 	int ch, qflag, rval;
 
 	qflag = 0;
-#ifdef SHELL
-	while ((ch = nextopt("q")) != '\0') {
-#else
 	while ((ch = getopt(argc, argv, "q")) != -1) {
-#endif
 		switch (ch) {
 		case 'q':
 			qflag = 1;
@@ -70,13 +64,8 @@ main(int argc, char *argv[])
 			usage();
 		}
 	}
-#ifdef SHELL
-	argc -= argptr - argv;
-	argv = argptr;
-#else
 	argc -= optind;
 	argv += optind;
-#endif
 	path = *argv != NULL ? *argv++ : ".";
 	rval  = 0;
 	do {
@@ -87,11 +76,7 @@ main(int argc, char *argv[])
 		} else
 			(void)printf("%s\n", p);
 	} while ((path = *argv++) != NULL);
-#ifdef SHELL
-	return (rval);
-#else
 	exit(rval);
-#endif
 }
 
 static void
@@ -99,9 +84,5 @@ usage(void)
 {
 
 	(void)fprintf(stderr, "usage: realpath [-q] [path ...]\n");
-#ifdef SHELL
-	error(NULL);
-#else
   	exit(1);
-#endif
 }

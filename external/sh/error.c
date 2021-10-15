@@ -67,7 +67,7 @@ volatile sig_atomic_t suppressint;
 volatile sig_atomic_t intpending;
 
 
-static void verrorwithstatus(int, const char *, va_list) __printf0like(2, 0) __dead2;
+void verrorwithstatus(int, const char *, va_list) __printf0like(2, 0) __dead2;
 
 /*
  * Called to raise an exception.  Since C doesn't include exceptions, we
@@ -126,7 +126,7 @@ onint(void)
 }
 
 
-static void
+void
 vwarning(const char *msg, va_list ap)
 {
 	if (commandname)
@@ -153,7 +153,7 @@ warning(const char *msg, ...)
  * is not NULL then error prints an error message using printf style
  * formatting.  It then raises the error exception.
  */
-static void
+void
 verrorwithstatus(int status, const char *msg, va_list ap)
 {
 	/*

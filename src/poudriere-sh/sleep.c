@@ -57,8 +57,7 @@ __FBSDID("$FreeBSD: head/bin/sleep/sleep.c 308432 2016-11-08 05:31:01Z cem $");
 #ifdef SHELL
 #define main sleepcmd
 #include "bltin/bltin.h"
-#include <errno.h>
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
+#include "helpers.h"
 #endif
 
 static void usage(void);
@@ -85,7 +84,7 @@ main(int argc, char *argv[])
 #ifdef SHELL
 	report_requested = 0;
 #else
-	if (caph_limit_stdio() < 0 || (cap_enter() < 0 && errno != ENOSYS))
+	if (caph_limit_stdio() < 0 || caph_enter() < 0)
 		err(1, "capsicum");
 #endif
 
@@ -127,7 +126,7 @@ main(int argc, char *argv[])
 			sigaction(SIGINFO, &oact, NULL);
 			INTON;
 #endif
-			err(1, "%s", "nanosleep");
+			err(1, "nanosleep");
 #ifdef SHELL
 		} else if (errno == EINTR) {
 			/* Don't ignore interrupts that aren't SIGINFO. */
@@ -146,10 +145,6 @@ static void
 usage(void)
 {
 
-#ifdef SHELL
-	error("usage: sleep seconds");
-#else
 	fprintf(stderr, "usage: sleep seconds\n");
 	exit(1);
-#endif
 }

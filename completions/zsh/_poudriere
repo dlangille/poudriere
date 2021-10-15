@@ -11,6 +11,7 @@ _poudriere_pt() {
 _bulk=(
 	'-a[build the whole ports tree]'
 	'-f[get the list of ports to build from a file]:name of file:_files'
+	'-b[specify what binary package branch to use]::'
 	'-B[what buildname to use]:buildname'
 	'-c[clean all the previously built binary packages and logs]'
 	'-C[clean only the packages listed on the command line or -f file]'
@@ -59,19 +60,19 @@ _image=(
 	'-o[image destination directory]:directory:_files'
 	'-p[Ports tree]::tree:_poudriere_pt'
 	'-s[set the image size]:size:'
-	'-t[type of image]::type:((iso iso+mfs iso+zmfs usb usb+mfs usb+zmfs rawdisk zrawdisk tar firmware rawfirmware embedded))'
+	'-t[type of image]::type:((iso iso+mfs iso+zmfs usb usb+mfs usb+zmfs rawdisk zrawdisk tar firmware rawfirmware))'
 	'-X[file containing the list in cpdup format]:file:_files'
 	'-z[set]::'
 )
 
 _jail=(
-	'(-d -i -l -s -k -u -r)-c[create a jail]' 
-	'(-c -i -l -s -k -u -r)-d[delete a jail]' 
+	'(-d -i -l -s -k -u -r)-c[create a jail]'
+	'(-c -i -l -s -k -u -r)-d[delete a jail]'
 	'(-c -d -l -s -k -u -r)-i[show information about a jail]'
-	'(-c -d -i -s -k -u -r)-l[list all available jails]' 
-	'(-c -d -i -l -k -u -r)-s[start a jail]' 
-	'(-c -d -i -l -s -u -r)-k[stop a jail]' 
-	'(-c -d -i -l -s -k -r)-u[update a jail]' 
+	'(-c -d -i -s -k -u -r)-l[list all available jails]'
+	'(-c -d -i -l -k -u -r)-s[start a jail]'
+	'(-c -d -i -l -s -u -r)-k[stop a jail]'
+	'(-c -d -i -l -s -k -r)-u[update a jail]'
 	'(-c -d -i -l -s -k -u)-r[rename a jail to name]::name'
 	'-b[build the OS (for use with -m src)]'
 	'-q[quiet (do not print the header)]'
@@ -89,7 +90,7 @@ _jail=(
 	'-t[version of FreeBSD to upgrade the jail to]::version'
 	'-U[specify a url to fetch the sources (with method git and/or svn)]::url'
 	'-x[build and setup native-xtools cross compile tools in jail when building for a different TARGET ARCH than the host]'
-	'-C[clean remaining data existing in pourdiere data folder]::clean:(all cache logs packages wrkdirs)'
+	'-C[clean remaining data existing in poudriere data folder]::clean:(all cache logs packages wrkdirs)'
 	'-p[specify which ports tree to start/stop the jail with]::tree:_poudriere_pt'
 	'-z[specify which SET the jail to start/stop with]::set'
 )

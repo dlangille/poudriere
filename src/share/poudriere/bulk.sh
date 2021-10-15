@@ -25,6 +25,8 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 
+. ${SCRIPTPREFIX}/common.sh
+
 usage() {
 	cat << EOF
 poudriere bulk [options] [-a|-f file|cat/port ...]
@@ -38,6 +40,9 @@ Options:
     -B name     -- What buildname to use (must be unique, defaults to
                    YYYY-MM-DD_HH:MM:SS). Resuming a previous build will not
                    retry built/failed/skipped/ignored packages.
+    -b branch   -- Branch to choose for fetching packages from official
+                   repositories: valid options are: latest, quarterly,
+                   release_*, or a url.
     -C          -- Clean only the packages listed on the command line or
                    -f file.  Implies -c for -a.
     -c          -- Clean all the previously built binary packages and logs.
@@ -53,8 +58,10 @@ Options:
     -k          -- When doing testing with -t, don't consider failures as
                    fatal; don't skip dependent ports on findings.
     -N          -- Do not build package repository when build completed
+    -NN         -- Do not commit package repository when build completed
     -n          -- Dry-run. Show what will be done, but do not build
                    any packages.
+    -O overlays -- Specify extra ports trees to overlay
     -p tree     -- Specify on which ports tree the bulk build will be done
     -R          -- Clean RESTRICTED packages after building
     -r          -- Resursively test all dependencies as well
@@ -70,7 +77,7 @@ Options:
     -w          -- Save WRKDIR on failed builds
     -z set      -- Specify which SET to use
 EOF
-	exit 1
+	exit ${EX_USAGE}
 }
 
 bulk_cleanup() {
@@ -86,17 +93,22 @@ DRY_RUN=0
 ALL=0
 BUILD_REPO=1
 INTERACTIVE_MODE=0
-. ${SCRIPTPREFIX}/common.sh
+OVERLAYS=""
+COMMIT=1
 
 [ $# -eq 0 ] && usage
 
-while getopts "aB:CcFf:iIj:J:knNp:RrSTtvwz:" FLAG; do
+while getopts "ab:B:CcFf:iIj:J:knNO:p:RrSTtvwz:" FLAG; do
 	case "${FLAG}" in
 		a)
 			ALL=1
 			;;
 		B)
 			BUILDNAME="${OPTARG}"
+			;;
+		b)
+			PACKAGE_FETCH_BRANCH="${OPTARG}"
+			validate_package_branch "${PACKAGE_FETCH_BRANCH}"
 			;;
 		c)
 			CLEAN=1
@@ -112,7 +124,7 @@ while getopts "aB:CcFf:iIj:J:knNp:RrSTtvwz:" FLAG; do
 			# a cd / was done.
 			[ "${OPTARG#/}" = "${OPTARG}" ] && \
 			    OPTARG="${SAVED_PWD}/${OPTARG}"
-			LISTPKGS="${LISTPKGS} ${OPTARG}"
+			LISTPKGS="${LISTPKGS:+${LISTPKGS} }${OPTARG}"
 			;;
 		I)
 			INTERACTIVE_MODE=2
@@ -132,13 +144,28 @@ while getopts "aB:CcFf:iIj:J:knNp:RrSTtvwz:" FLAG; do
 			PORTTESTING_FATAL=no
 			;;
 		N)
+			: ${NFLAG:=0}
+			NFLAG=$((NFLAG + 1))
 			BUILD_REPO=0
+			if [ "${NFLAG}" -eq 2 ]; then
+				# Don't commit the packages.  This is effectively
+				# the same as -n but does an actual build.
+				if [ "${ATOMIC_PACKAGE_REPOSITORY}" != "yes" ]; then
+					err ${EX_USAGE} "-NN only makes sense with ATOMIC_PACKAGE_REPOSITORY=yes"
+				fi
+				COMMIT=0
+			fi
 			;;
 		n)
 			[ "${ATOMIC_PACKAGE_REPOSITORY}" = "yes" ] ||
 			    err 1 "ATOMIC_PACKAGE_REPOSITORY required for dry-run support"
 			DRY_RUN=1
 			DRY_MODE="${COLOR_DRY_MODE}[Dry Run]${COLOR_RESET} "
+			;;
+		O)
+			porttree_exists ${OPTARG} ||
+			    err 2 "No such overlay ${OPTARG}"
+			OVERLAYS="${OVERLAYS} ${OPTARG}"
 			;;
 		p)
 			porttree_exists ${OPTARG} ||
@@ -164,7 +191,7 @@ while getopts "aB:CcFf:iIj:J:knNp:RrSTtvwz:" FLAG; do
 			NO_RESTRICTED=1
 			;;
 		v)
-			VERBOSE=$((${VERBOSE} + 1))
+			VERBOSE=$((VERBOSE + 1))
 			;;
 		w)
 			SAVE_WRKDIR=1
@@ -206,13 +233,13 @@ export MASTERNAME
 export MASTERMNT
 export POUDRIERE_BUILD_TYPE=bulk
 
-CLEANUP_HOOK=bulk_cleanup
-
 read_packages_from_params "$@"
+
+CLEANUP_HOOK=bulk_cleanup
 
 run_hook bulk start
 
-jail_start ${JAILNAME} ${PTNAME} ${SETNAME}
+jail_start "${JAILNAME}" "${PTNAME}" "${SETNAME}"
 
 _log_path LOGD
 if [ -d ${LOGD} -a ${CLEAN} -eq 1 ]; then
@@ -235,17 +262,7 @@ _bget nbbuilt stats_built
 _bget nbfailed stats_failed
 _bget nbskipped stats_skipped
 _bget nbignored stats_ignored
-# Always create repository if it is missing (but still respect -N)
-if 	[ ! -f ${MASTERMNT}/packages/digests.txz -o \
-	  ! -f ${MASTERMNT}/packages/packagesite.txz ]; then
-	[ $nbbuilt -eq 0 -a ${BUILD_REPO} -eq 1 ] && 
-		msg "No package built, but repository needs to be created"
-	# This block mostly to avoid next
-# Package all newly built ports
-elif [ $nbbuilt -eq 0 ]; then
-	msg "No package built, no need to update the repository"
-	BUILD_REPO=0
-fi
+_bget nbfetched stats_fetched
 
 [ "${NO_RESTRICTED}" != "no" ] && clean_restricted
 
@@ -255,7 +272,7 @@ commit_packages
 
 show_build_results
 
-run_hook bulk done ${nbbuilt} ${nbfailed} ${nbignored} ${nbskipped}
+run_hook bulk done ${nbbuilt} ${nbfailed} ${nbignored} ${nbskipped} ${nbfetched}
 
 [ ${INTERACTIVE_MODE} -gt 0 ] && enter_interactive
 

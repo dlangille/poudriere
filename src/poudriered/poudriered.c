@@ -25,6 +25,10 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
+
 #include <sys/types.h>
 #include <sys/event.h>
 #include <sys/param.h>
@@ -51,10 +55,6 @@
 #include <stdlib.h>
 #include <ucl.h>
 #include <unistd.h>
-
-#ifdef HAVE_CONFIG_H
-#include <config.h>
-#endif
 
 static ucl_object_t *conf;
 static ucl_object_t *queue = NULL;
@@ -600,7 +600,7 @@ keep(const ucl_object_t *c, struct client *cl)
 static void
 client_exec(struct client *cl)
 {
-	const ucl_object_t *c, *cmd_cred, *a;
+	const ucl_object_t *c, *cmd_cred;
 	bool cmd_allowed = false;
 	struct ucl_parser *p;
 	ucl_object_t *cmd, *msg;
@@ -883,7 +883,7 @@ int
 main(int argc, char **argv)
 {
 	struct sockaddr_un un;
-	struct pidfh *pfh;
+	struct pidfh *pfh = NULL;
 	pid_t otherpid;
 	bool foreground = false;
 	int mib[4];

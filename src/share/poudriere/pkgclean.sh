@@ -24,6 +24,8 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 
+. ${SCRIPTPREFIX}/common.sh
+
 usage() {
 	cat <<EOF
 poudriere pkgclean [options] [-f file|cat/port ...]
@@ -41,6 +43,7 @@ Options:
     -n          -- Do not actually remove anything, just show what would be
                    removed
     -N          -- Do not build the package repository when clean completed
+    -O overlays -- Specify extra ports trees to overlay
     -p tree     -- Which ports tree to use for packages
     -R          -- Clean RESTRICTED packages after building
     -v          -- Be verbose; show more information. Use twice to enable
@@ -48,7 +51,7 @@ Options:
     -y          -- Assume yes when deleting and do not confirm
     -z set      -- Specify which SET to use for packages
 EOF
-	exit 1
+	exit ${EX_USAGE}
 }
 
 PTNAME=default
@@ -56,12 +59,11 @@ SETNAME=""
 DRY_RUN=0
 DO_ALL=0
 BUILD_REPO=1
-
-. ${SCRIPTPREFIX}/common.sh
+OVERLAYS=""
 
 [ $# -eq 0 ] && usage
 
-while getopts "Aaj:J:f:nNp:Rvyz:" FLAG; do
+while getopts "Aaj:J:f:nNO:p:Rvyz:" FLAG; do
 	case "${FLAG}" in
 		A)
 			DO_ALL=1
@@ -81,13 +83,18 @@ while getopts "Aaj:J:f:nNp:Rvyz:" FLAG; do
 			# a cd / was done.
 			[ "${OPTARG#/}" = "${OPTARG}" ] && \
 			    OPTARG="${SAVED_PWD}/${OPTARG}"
-			LISTPKGS="${LISTPKGS} ${OPTARG}"
+			LISTPKGS="${LISTPKGS:+${LISTPKGS} }${OPTARG}"
 			;;
 		n)
 			DRY_RUN=1
 			;;
 		N)
 			BUILD_REPO=0
+			;;
+		O)
+			porttree_exists ${OPTARG} ||
+			    err 2 "No such overlay ${OPTARG}"
+			OVERLAYS="${OVERLAYS} ${OPTARG}"
 			;;
 		p)
 			porttree_exists ${OPTARG} ||
@@ -98,7 +105,7 @@ while getopts "Aaj:J:f:nNp:Rvyz:" FLAG; do
 			NO_RESTRICTED=1
 			;;
 		v)
-			VERBOSE=$((${VERBOSE} + 1))
+			VERBOSE=$((VERBOSE + 1))
 			;;
 		y)
 			answer=yes
@@ -151,7 +158,7 @@ PKG_EXT='*' package_dir_exists_and_has_packages ||
 maybe_run_queued "${saved_argv}"
 
 msg "Gathering all expected packages"
-jail_start ${JAILNAME} ${PTNAME} ${SETNAME}
+jail_start "${JAILNAME}" "${PTNAME}" "${SETNAME}"
 prepare_ports
 msg "Looking for unneeded packages"
 bset status "pkgclean:"
@@ -177,6 +184,10 @@ for file in ${PACKAGES}/All/*; do
 			if ! pkg_get_origin origin "${file}"; then
 				msg_verbose "Found corrupt package: ${file}"
 				echo "${file}" >> ${BADFILES_LIST}
+			elif shash_remove pkgname-forbidden "${pkgname}" \
+			    forbidden; then
+				msg_verbose "Found forbidden package (${forbidden}): ${file}"
+				echo "${file}" >> ${BADFILES_LIST}
 			elif ! pkgbase_is_needed "${pkgname}"; then
 				msg_verbose "Found unwanted package: ${file}"
 				echo "${file}" >> ${BADFILES_LIST}
@@ -184,6 +195,17 @@ for file in ${PACKAGES}/All/*; do
 				echo "${file} ${origin}" >> ${FOUND_ORIGINS}
 			fi
 			;;
+		*.txz)
+			if [ -L "${file}" ]; then
+				# Ignore txz symlinks as they otherwise
+				# cuase spam and confusion.  If we delete
+				# a package it points to then it will be
+				# removed later by
+				# delete_stale_symlinks_and_empty_dirs().
+				continue
+			fi
+			# FALLTHROUGH
+			;&
 		*)
 			msg_verbose "Found incorrect format file: ${file}"
 			echo "${file}" >> ${BADFILES_LIST}
@@ -229,7 +251,7 @@ END {
 		if (origin_count[pkgbase] > 1)
 			print origins[pkgbase],packages[pkgbase]
 }
-' | while read origin packages; do
+' | while mapfile_read_loop_redir origin packages; do
 	lastpkg=
 	lastver=0
 	for pkg in $packages; do
@@ -284,8 +306,13 @@ if [ $ret -eq 1 ]; then
 		if [ ${DO_ALL} -eq 1 ]; then
 			msg "Removing pkg repository files"
 			rm -f "${PACKAGES}/meta.txz" \
+				"${PACKAGES}/meta.${PKG_EXT}" \
 				"${PACKAGES}/digests.txz" \
-				"${PACKAGES}/packagesite.txz"
+				"${PACKAGES}/digests.${PKG_EXT}" \
+				"${PACKAGES}/filesite.txz" \
+				"${PACKAGES}/filesite.${PKG_EXT}" \
+				"${PACKAGES}/packagesite.txz" \
+				"${PACKAGES}/packagesite.${PKG_EXT}"
 		else
 			build_repo
 		fi

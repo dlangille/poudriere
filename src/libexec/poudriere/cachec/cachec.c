@@ -40,9 +40,7 @@
 #ifdef SHELL
 #define main cacheccmd
 #include "bltin/bltin.h"
-#include "options.h"
 #include "helpers.h"
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
 #endif
 
 int
@@ -58,17 +56,8 @@ main(int argc, char **argv)
 	bool set = false;
 #ifdef SHELL
 	struct sigdata oinfo;
+#endif
 
-	while ((ch = nextopt("s:")) != '\0') {
-		switch (ch) {
-		case 's':
-			queuepath = shoptarg;
-			break;
-		}
-	}
-	argc -= argptr - argv;
-	argv = argptr;
-#else
 	while ((ch = getopt(argc, argv, "s:")) != -1) {
 		switch (ch) {
 		case 's':
@@ -78,7 +67,6 @@ main(int argc, char **argv)
 	}
 	argc -= optind;
 	argv += optind;
-#endif
 
 	if (!queuepath || argc < 1)
 		errx(EXIT_FAILURE, "usage: cachec -s queuepath \"msg\"");
@@ -102,7 +90,7 @@ main(int argc, char **argv)
 		trap_pop(SIGINFO, &oinfo);
 		INTON;
 #endif
-		err(EXIT_FAILURE, "%s", "mq_open");
+		err(EXIT_FAILURE, "mq_open");
 	}
 	if (set)
 		snprintf(out, sizeof(out), "%s", argv[0]);

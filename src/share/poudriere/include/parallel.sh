@@ -221,7 +221,7 @@ parallel_stop() {
 }
 
 parallel_shutdown() {
-	kill_and_wait 30 "${PARALLEL_PIDS}" || :
+	kill_and_wait 30 "${PARALLEL_PIDS-}" || :
 	# Reap the pids
 	parallel_stop 0 2>/dev/null || :
 }
@@ -234,7 +234,7 @@ parallel_run() {
 	# Occasionally reap dead children. Don't do this too often or it
 	# becomes a bottleneck. Do it too infrequently and there is a risk
 	# of PID reuse/collision
-	_SHOULD_REAP=$((${_SHOULD_REAP} + 1))
+	_SHOULD_REAP=$((_SHOULD_REAP + 1))
 	if [ ${_SHOULD_REAP} -eq 16 ]; then
 		_SHOULD_REAP=0
 		_reap_children || ret=$?
@@ -243,7 +243,8 @@ parallel_run() {
 	# Only read once all slots are taken up; burst jobs until maxed out.
 	# NBPARALLEL is never decreased and only inreased until maxed.
 	if [ ${NBPARALLEL} -eq ${PARALLEL_JOBS} ]; then
-		unset a; until trappedinfo=; read a <&9 || [ -z "$trappedinfo" ]; do :; done
+		a=
+		read_blocking a <&9 || :
 	fi
 
 	[ ${NBPARALLEL} -lt ${PARALLEL_JOBS} ] && NBPARALLEL=$((NBPARALLEL + 1))
@@ -306,8 +307,8 @@ nohang() {
 		# This is done instead of a 'sleep' as it should recognize
 		# the command has completed right away instead of waiting
 		# on the 'sleep' to finish
-		unset n; until trappedinfo=; read -t $read_timeout n <&8 ||
-			[ -z "$trappedinfo" ]; do :; done
+		n=
+		read_blocking -t "${read_timeout}" n <&8 || :
 		if [ "${n}" = "done" ]; then
 			_wait $childpid || ret=1
 			break
@@ -354,18 +355,19 @@ spawn_job() {
 
 _spawn_wrapper() {
 	case $- in
-		# Job control
-		*m*)
-		# No job control
-		# Reset SIGINT to the default to undo POSIX's SIG_IGN in
-		# 2.11 "Signals and Error Handling". This will ensure no
-		# foreground process is left around on SIGINT.
-
+	*m*)	# Job control
 		# Don't stop processes if they try using TTY.
 		trap '' SIGTTIN
 		trap '' SIGTTOU
-	;;
-		*) trap - INT ;;
+		;;
+	*)	# No job control
+		# Reset SIGINT to the default to undo POSIX's SIG_IGN in
+		# 2.11 "Signals and Error Handling". This will ensure no
+		# foreground process is left around on SIGINT.
+		if [ ${SUPPRESS_INT:-0} -eq 0 ]; then
+			trap - INT
+		fi
+		;;
 	esac
 
 	"$@"

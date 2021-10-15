@@ -50,10 +50,7 @@ __FBSDID("$FreeBSD$");
 #ifdef SHELL
 #define main rmdircmd
 #include "bltin/bltin.h"
-#include "options.h"
-#undef vflag
-#include <errno.h>
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
+#include "helpers.h"
 #endif
 
 static int rm_path(char *);
@@ -69,10 +66,8 @@ main(int argc, char *argv[])
 
 #ifdef SHELL
 	pflag = vflag = 0;
-	while ((ch = nextopt("pv")) != '\0')
-#else
-	while ((ch = getopt(argc, argv, "pv")) != -1)
 #endif
+	while ((ch = getopt(argc, argv, "pv")) != -1)
 		switch(ch) {
 		case 'p':
 			pflag = 1;
@@ -84,13 +79,8 @@ main(int argc, char *argv[])
 		default:
 			usage();
 		}
-#ifdef SHELL
-	argc -= argptr - argv;
-	argv = argptr;
-#else
 	argc -= optind;
 	argv += optind;
-#endif
 
 	if (argc == 0)
 		usage();
@@ -107,7 +97,7 @@ main(int argc, char *argv[])
 		}
 	}
 
-	return(errors);
+	exit(errors);
 }
 
 static int
@@ -143,9 +133,5 @@ usage(void)
 {
 
 	(void)fprintf(stderr, "usage: rmdir [-pv] directory ...\n");
-#ifdef SHELL
-	error(NULL);
-#else
 	exit(1);
-#endif
 }

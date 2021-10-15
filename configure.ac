@@ -1,15 +1,26 @@
 AC_INIT([poudriere],[3.1.99],[https://github.com/freebsd/poudriere],[poudriere])
 AC_CONFIG_SRCDIR([configure.ac])
+AC_CONFIG_MACRO_DIRS([m4])
+AC_CONFIG_AUX_DIR([build-aux])
 AM_INIT_AUTOMAKE([1.11 foreign -Wall -Wno-portability no-dist-gzip dist-xz])
 AM_SILENT_RULES([yes])
 AC_CONFIG_HEADER(src/config.h)
 
 AM_MAINTAINER_MODE([disable])
+AS_IF([test "$USE_MAINTAINER_MODE" != "no"],
+      [ax_is_release=no],[ax_is_release=yes])
+AX_CHECK_ENABLE_DEBUG([yes])
 
 AC_PROG_CC([cc clang gcc])
-AC_PROG_RANLIB
+AM_CFLAGS=
+AX_CHECK_COMPILE_FLAG([-Wno-format-truncation],
+                      [AM_CFLAGS="$AM_CFLAGS -Wno-format-truncation"],
+                      [], [-Werror])
+AC_SUBST([AM_CFLAGS])
 
-AC_CHECK_FUNCS([strftime_l strchrnul utimensat])
+LT_INIT
+
+AC_CHECK_FUNCS([funlinkat strftime_l strchrnul utimensat])
 
 AC_CHECK_HEADERS_ONCE([sys/types.h])
 AC_CHECK_HEADERS_ONCE([sys/stat.h])
@@ -39,12 +50,12 @@ AC_CACHE_CHECK([whether rm -x works], [ac_cv_rm_x_works],
 		rm -x /nonexistent 2>/dev/null
 		test $? -eq 1 && ac_cv_rm_x_works=yes])
 if test "$ac_cv_rm_x_works" = yes; then
-  RM=
+  USE_RM=
 else
   # Need bundled
-  RM=rm
+  USE_RM=rm
 fi
-AC_SUBST([RM])
+AC_SUBST([USE_RM])
 
 AC_CHECK_DECLS([F_DUPFD_CLOEXEC], [ac_have_f_dupfd_cloexec=1],
     [ac_have_f_dupfd_cloexec=0], [[#include <fcntl.h>]])
@@ -57,10 +68,12 @@ if [[ $ac_have_f_dupfd_cloexec -eq 0 ]]; then
 fi
 AC_SUBST([SH])
 
-AC_CONFIG_FILES(Makefile)
+AC_CONFIG_FILES([Makefile])
+AC_CONFIG_FILES([test/Makefile])
+AC_CONFIG_FILES([src/etc/rc.d/poudriered])
 
 # Preserve timestamps for install. This is needed to preserve hardlinks
 # for HTML files.
-AC_SUBST([INSTALL], ["${ac_cv_path_install% -c} -Cp"])
+AC_SUBST([INSTALL], ["${ac_cv_path_install% -c} -p"])
 
-AC_OUTPUT([src/etc/rc.d/poudriered])
+AC_OUTPUT

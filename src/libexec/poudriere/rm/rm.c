@@ -64,14 +64,7 @@ __FBSDID("$FreeBSD: head/bin/rm/rm.c 326025 2017-11-20 19:49:47Z pfg $");
 #ifdef SHELL
 #define main rmcmd
 #include "bltin/bltin.h"
-#include "options.h"
-#undef fflag
-#undef iflag
-#undef Iflag
-#undef Pflag
-#undef vflag
-#undef xflag
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
+#include "helpers.h"
 extern volatile sig_atomic_t gotsig[NSIG];
 struct sigaction info_act, info_oact;
 #endif
@@ -122,31 +115,18 @@ main(int argc, char *argv[])
 		++p;
 
 	if (strcmp(p, "unlink") == 0) {
-#ifdef SHELL
-		while (nextopt("") != '\0')
-#else
 		while (getopt(argc, argv, "") != -1)
-#endif
 			usage();
-#ifdef SHELL
-		argc -= argptr - argv;
-		argv = argptr;
-#else
 		argc -= optind;
 		argv += optind;
-#endif
 		if (argc != 1)
 			usage();
 		rm_file(&argv[0]);
-		return(eval);
+		exit(eval);
 	}
 
 	Pflag = rflag = xflag = 0;
-#ifdef SHELL
-	while ((ch = nextopt("dfiIPRrvWx")) != '\0')
-#else
 	while ((ch = getopt(argc, argv, "dfiIPRrvWx")) != -1)
-#endif
 		switch(ch) {
 		case 'd':
 			dflag = 1;
@@ -181,13 +161,8 @@ main(int argc, char *argv[])
 		default:
 			usage();
 		}
-#ifdef SHELL
-	argc -= argptr - argv;
-	argv = argptr;
-#else
 	argc -= optind;
 	argv += optind;
-#endif
 
 	if (argc < 1) {
 		if (fflag)
@@ -217,7 +192,7 @@ main(int argc, char *argv[])
 				sigaction(SIGINFO, &info_oact, NULL);
 				INTON;
 #endif
-				return (1);
+				exit (1);
 			}
 		}
 		if (rflag)
@@ -230,7 +205,7 @@ main(int argc, char *argv[])
 	sigaction(SIGINFO, &info_oact, NULL);
 	INTON;
 #endif
-	return (eval);
+	exit (eval);
 }
 
 static void
@@ -268,7 +243,7 @@ rm_tree(char **argv)
 		sigaction(SIGINFO, &info_oact, NULL);
 		INTON;
 #endif
-		err(1, "%s", "fts_open");
+		err(1, "fts_open");
 	}
 	while ((p = fts_read(fts)) != NULL) {
 #ifdef SHELL
@@ -421,7 +396,7 @@ err:
 		sigaction(SIGINFO, &info_oact, NULL);
 		INTON;
 #endif
-		err(1, "%s", "fts_read");
+		err(1, "fts_read");
 	}
 	fts_close(fts);
 }
@@ -605,7 +580,7 @@ check(const char *path, const char *name, struct stat *sp)
 			sigaction(SIGINFO, &info_oact, NULL);
 			INTON;
 #endif
-			err(1, "%s", "fflagstostr");
+			err(1, "fflagstostr");
 		}
 		if (Pflag) {
 #ifdef SHELL
@@ -735,11 +710,7 @@ usage(void)
 	(void)fprintf(stderr, "%s\n%s\n",
 	    "usage: rm [-f | -i] [-dIPRrvWx] file ...",
 	    "       unlink file");
-#ifdef SHELL
-	error(NULL);
-#else
 	exit(EX_USAGE);
-#endif
 }
 
 static void

@@ -26,6 +26,8 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 
+. ${SCRIPTPREFIX}/common.sh
+
 usage() {
 	cat << EOF
 poudriere options [options] [-f file|cat/port ...]
@@ -46,7 +48,7 @@ Options:
     -s          -- Show port options instead of configuring them
     -z set      -- Specify which SET to use
 EOF
-	exit 1
+	exit ${EX_USAGE}
 }
 
 ARCH=
@@ -56,8 +58,6 @@ PTNAME_TMP=""
 DO_RECURSE=y
 COMMAND=config-conditional
 RECURSE_COMMAND=config-recursive
-
-. ${SCRIPTPREFIX}/common.sh
 
 [ $# -eq 0 ] && usage
 
@@ -84,7 +84,7 @@ while getopts "a:cCj:f:p:nrsz:" FLAG; do
 			# a cd / was done.
 			[ "${OPTARG#/}" = "${OPTARG}" ] && \
 			    OPTARG="${SAVED_PWD}/${OPTARG}"
-			BULK_LIST="${OPTARG}"
+			LISTPKGS="${LISTPKGS:+${LISTPKGS} }${OPTARG}"
 			;;
 		p)
 			porttree_exists ${OPTARG} ||
@@ -129,15 +129,7 @@ export PORTSDIR=`pget ${PTNAME} mnt`
 [ -z "${PORTSDIR}" ] && err 1 "No such ports tree: ${PTNAME}"
 command -v dialog4ports >/dev/null 2>&1 || err 1 "You must have ports-mgmt/dialog4ports installed on the host to use this command."
 
-if [ $# -eq 0 ]; then
-	[ -n "${BULK_LIST}" ] || err 1 "No packages specified"
-	[ -r "${BULK_LIST}" ] || err 1 "No such list of packages: ${BULK_LIST}"
-LISTPORTS=`grep -v -E '(^[[:space:]]*#|^[[:space:]]*$)' ${BULK_LIST}`
-else
-	[ -z "${BULK_LIST}" ] ||
-		err 1 "Command line arguments and a list of ports cannot be used at the same time"
-	LISTPORTS="$@"
-fi
+read_packages_from_params "$@"
 
 OLD_PORT_DBDIR=${POUDRIERED}/${JAILNAME}${JAILNAME:+-}${SETNAME}${SETNAME:+-}options
 PORT_DBDIR=${POUDRIERED}/${JAILNAME}${JAILNAME:+-}${PTNAME_TMP}${PTNAME_TMP:+-}${SETNAME}${SETNAME:+-}options
@@ -153,6 +145,7 @@ if [ -d "${OLD_PORT_DBDIR}" ] && [ ! -d "${PORT_DBDIR}" ]; then
 fi
 
 mkdir -p ${PORT_DBDIR}
+msg "Working on options directory ${PORT_DBDIR}"
 
 __MAKE_CONF=$(mktemp -t poudriere-make.conf)
 export __MAKE_CONF
@@ -163,7 +156,7 @@ options_cleanup() {
 setup_makeconf ${__MAKE_CONF} "${JAILNAME}" "${PTNAME}" "${SETNAME}"
 
 export TERM=${SAVED_TERM}
-for originspec in ${LISTPORTS}; do
+for originspec in $(listed_ports show_moved); do
 	originspec_decode "${originspec}" origin '' flavor
 	[ -d ${PORTSDIR}/${origin} ] || err 1 "No such port: ${origin}"
 	env ${flavor:+FLAVOR=${flavor}} \

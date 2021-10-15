@@ -3,9 +3,12 @@ clockcmd -n		clock
 critical_startcmd -n	critical_start
 critical_endcmd -n	critical_end
 diremptycmd -n		dirempty
+getpidcmd -n		getpid
 getvarcmd -n		getvar
 _gsub_var_namecmd -n	_gsub_var_name
-_gsub_simplecmd -n	_gsub_simple
+_gsub_badcharscmd -n	_gsub_badchars
+_gsubcmd -n		_gsub
+gsubcmd -n		gsub
 issetvarcmd -n		issetvar
 locked_mkdircmd		locked_mkdir
 mapfilecmd -n		mapfile
@@ -15,6 +18,7 @@ mapfile_closecmd -n	mapfile_close
 mkdircmd -n		mkdir
 mkfifocmd -n		mkfifo
 mktempcmd -n		mktemp
+_mktempcmd -n		_mktemp
 pwaitcmd		pwait
 realpathcmd -n		realpath
 renamecmd -n		rename
@@ -22,7 +26,7 @@ rmcmd -n		rm
 rmdircmd -n		rmdir
 setproctitlecmd		setproctitle
 sleepcmd -n		sleep
-touchcmd		touch
+touchcmd -n		touch
 trap_pushcmd -n		trap_push
 trap_popcmd -n		trap_pop
 unlinkcmd -n		unlink

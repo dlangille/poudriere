@@ -7,6 +7,9 @@
    you don't. */
 #undef HAVE_DECL_F_DUPFD_CLOEXEC
 
+/* Define to 1 if you have the <dlfcn.h> header file. */
+#undef HAVE_DLFCN_H
+
 /* Define to 1 if you have the <errno.h> header file. */
 #undef HAVE_ERRNO_H
 
@@ -15,6 +18,9 @@
 
 /* Define to 1 if you have the <float.h> header file. */
 #undef HAVE_FLOAT_H
+
+/* Define to 1 if you have the `funlinkat' function. */
+#undef HAVE_FUNLINKAT
 
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
@@ -81,6 +87,12 @@
 
 /* Define to 1 if you have the `utimensat' function. */
 #undef HAVE_UTIMENSAT
+
+/* Define to the sub-directory where libtool stores uninstalled libraries. */
+#undef LT_OBJDIR
+
+/* Define if debugging is disabled */
+#undef NDEBUG
 
 /* Name of package */
 #undef PACKAGE

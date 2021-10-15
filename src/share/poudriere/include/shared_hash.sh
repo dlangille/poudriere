@@ -27,14 +27,13 @@
 : ${SHASH_VAR_NAME_SUB_BADCHARS:=" /"}
 : ${SHASH_VAR_PATH:=${TMPDIR:-/tmp}}
 : ${SHASH_VAR_PREFIX=$$}
+add_relpath_var SHASH_VAR_PATH || err "Failed to add SHASH_VAR_PATH to relpaths"
 
 _shash_var_name() {
 	local var="${1}"
-	local _gsub
 
 	# Replace SHASH_VAR_NAME_SUB_BADCHARS matches with _
-	_gsub_simple "${var}" "${SHASH_VAR_NAME_SUB_BADCHARS}"
-	_shash_var_name=${_gsub}
+	_gsub_badchars "${var}" "${SHASH_VAR_NAME_SUB_BADCHARS}" _shash_var_name
 }
 
 _shash_varkey_file() {
@@ -74,7 +73,6 @@ shash_get() {
 			if read_line _value "${_f}"; then
 				_values="${_values}${_values:+ }${_value}"
 				ret=0
-			else
 			fi
 		done
 	fi
@@ -120,6 +118,40 @@ shash_set() {
 		_shash_varkey_file "${var}" "${key}"
 		echo "${value}" > "${_shash_varkey_file}"
 	fi
+}
+
+shash_read() {
+	local -; set +x
+	[ $# -eq 2 ] || eargs shash_read var key
+	local var="$1"
+	local key="$2"
+	local _shash_varkey_file
+
+	_shash_varkey_file "${var}" "${key}"
+	mapfile_cat "${_shash_varkey_file}"
+}
+
+shash_read_mapfile() {
+	local -; set +x
+	[ $# -eq 3 ] || eargs shash_read var key mapfile_handle_var
+	local var="$1"
+	local key="$2"
+	local mapfile_handle_var="$3"
+	local _shash_varkey_file
+
+	_shash_varkey_file "${var}" "${key}"
+	mapfile "${mapfile_handle_var}" "${_shash_varkey_file}" "re"
+}
+
+shash_write() {
+	local -; set +x
+	[ $# -eq 2 ] || eargs shash_write var key
+	local var="$1"
+	local key="$2"
+	local _shash_varkey_file
+
+	_shash_varkey_file "${var}" "${key}"
+	write_atomic "${_shash_varkey_file}"
 }
 
 shash_remove_var() {

@@ -26,6 +26,7 @@
 
 #include <err.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -34,15 +35,15 @@
 #ifdef SHELL
 #define main clockcmd
 #include "bltin/bltin.h"
-#include <errno.h>
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
+#include "helpers.h"
 #endif
 
 static void
 usage(void)
 {
 
-		errx(EX_USAGE, "Usage: clock [-monotonic | -epoch]");
+		errx(EX_USAGE, "Usage: clock [-monotonic | -epoch] "
+		    "[-nsec]");
 }
 /*
  * Simple helper to return clock_gettime(CLOCK_MONOTONIC) for duration
@@ -53,7 +54,7 @@ main(int argc, char **argv)
 {
 	struct timespec ts;
 
-	if (argc != 2)
+	if (argc != 2 && argc != 3)
 		usage();
 
 #ifndef CLOCK_MONOTONIC_FAST
@@ -70,6 +71,9 @@ main(int argc, char **argv)
 			err(EXIT_FAILURE, "%s", "clock_gettime");
 	} else
 		usage();
-	printf("%ld\n", (long)ts.tv_sec);
+	if (argc == 3 && strcmp(argv[2], "-nsec") == 0)
+		printf("%jd.%09ld\n", (intmax_t)ts.tv_sec, ts.tv_nsec);
+	else
+		printf("%jd\n", (intmax_t)ts.tv_sec);
 	return (EXIT_SUCCESS);
 }

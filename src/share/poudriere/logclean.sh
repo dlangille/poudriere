@@ -24,6 +24,8 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 
+. ${SCRIPTPREFIX}/common.sh
+
 usage() {
 	cat <<EOF
 poudriere logclean [options] <days | -a | -N count>
@@ -47,7 +49,7 @@ Options:
     -z set      -- Specify which SET to match for logs. Use '0' to only
                    match on empty sets.
 EOF
-	exit 1
+	exit ${EX_USAGE}
 }
 
 BUILDNAME_GLOB="*"
@@ -55,14 +57,14 @@ PTNAME=
 SETNAME=
 DRY_RUN=0
 DAYS=
+ALL=0
 MAX_COUNT=
-
-. ${SCRIPTPREFIX}/common.sh
 
 while getopts "aB:j:p:nN:vyz:" FLAG; do
 	case "${FLAG}" in
 		a)
 			DAYS=0
+			ALL=1
 			;;
 		B)
 			BUILDNAME_GLOB="${OPTARG}"
@@ -80,7 +82,7 @@ while getopts "aB:j:p:nN:vyz:" FLAG; do
 			PTNAME=${OPTARG}
 			;;
 		v)
-			VERBOSE=$((${VERBOSE} + 1))
+			VERBOSE=$((VERBOSE + 1))
 			;;
 		y)
 			answer=yes
@@ -100,8 +102,18 @@ post_getopts
 
 if [ -z "${DAYS}" -a -z "${MAX_COUNT}" -a $# -eq 0 ]; then
 	usage
+	# <days> mutually exclusive with -N and -a
+elif [ $# -ne 0 ] && [ -n "${MAX_COUNT}" -o "${ALL}" -eq 1 ]; then
+	usage
+	# -N mutually exclusive with <days> and -a
+elif [ -n "${MAX_COUNT}" ] && [ $# -ne 0 -o "${ALL}" -eq 1 ]; then
+	usage
+	# -a mutually exclusive with -N and <days>
+elif [ "${ALL}" -eq 1 ] && [ -n "${MAX_COUNT}" -o $# -ne 0 ]; then
+	usage
 fi
 : ${DAYS:=$1}
+unset ALL
 
 POUDRIERE_BUILD_TYPE="bulk"
 _log_path_top log_top
@@ -112,6 +124,7 @@ logclean_cleanup() {
 }
 OLDLOGS=$(mktemp -t poudriere_logclean)
 
+slock_acquire logclean 30 || err 1 "Another logclean is busy"
 [ -d "${log_top}" ] || err 0 "No logs present"
 
 cd ${log_top}
@@ -122,35 +135,34 @@ cd ${log_top}
 #  3 = build-specific log
 # Find logs that are missing their jail-specific or build-specific links.
 find_broken_latest_per_pkg_links() {
-	[ "${PWD}" = "${log_top}" ] || \
-	    err 1 "find_broken_latest_per_pkg_links requires PWD=${log_top}"
+	required_env find_broken_latest_per_pkg_links PWD "${log_top}"
 
 	log_links=3
-	find latest-per-pkg -type f ! -links ${log_links}
+	# -Btime is to avoid racing with bulk logfile()
+	find -x latest-per-pkg -type f -Btime +1m ! -links ${log_links}
 	# Each MASTERNAME/latest-per-pkg
-	find . -mindepth 2 -maxdepth 2 -name latest-per-pkg -print0 | \
-	    xargs -0 -J {} find {} -type f ! -links ${log_links} | \
-	    sed -e 's,^\./,,'
+	find -x . -mindepth 2 -maxdepth 2 -name latest-per-pkg -print0 | \
+	    xargs -0 -J {} find -x {} -type f -Btime +1m \
+	    ! -links ${log_links} | sed -e 's,^\./,,'
 }
 
 # Very old style symlinks.  Find broken links.
 delete_broken_latest_per_pkg_old_symlinks() {
-	[ "${PWD}" = "${log_top}" ] || \
-	    err 1 "find_broken_latest_per_pkg_old_symlinks requires PWD=${log_top}"
+	required_env delete_broken_latest_per_pkg_old_symlinks PWD "${log_top}"
 
-	find -L latest-per-pkg -type l -exec rm -f {} +
+	find -x -L latest-per-pkg -type l -exec rm -f {} +
 	# Each MASTERNAME/latest-per-pkg
-	find . -mindepth 2 -maxdepth 2 -name latest-per-pkg -print0 | \
-	    xargs -0 -J {} find -L {} -type l -exec rm -f {} +
+	find -x . -mindepth 2 -maxdepth 2 -name latest-per-pkg -print0 | \
+	    xargs -0 -J {} find -x -L {} -type l -exec rm -f {} +
 }
 
 # Find now-empty latest-per-pkg directories.  This will take 3 runs
 # to actually clear out a package.
 delete_empty_latest_per_pkg() {
-	[ "${PWD}" = "${log_top}" ] || \
-	    err 1 "find_empty_latest_per_pkg requires PWD=${log_top}"
+	required_env delete_empty_latest_per_pkg PWD "${log_top}"
 
-	find latest-per-pkg -mindepth 1 -type d -empty -delete
+	# -Btime is to avoid racing with bulk logfile()
+	find -x latest-per-pkg -mindepth 1 -type d -Btime +1m -empty -delete
 }
 
 echo_logdir() {
@@ -183,12 +195,12 @@ if [ -n "${MAX_COUNT}" ]; then
 	END {
 		for (mastername in out) {
 			total = split(out[mastername], a, "\t")
-			for (n in a) {
-				if (total <= MAX_COUNT)
-					break
+			if (MAX_COUNT > total)
+				total = 0
+			else
+				total -= MAX_COUNT
+			for (n = 1; n <= total; n++)
 				print a[n]
-				total = total - 1
-			}
 		}
 	}
 	' > "${OLDLOGS}"
@@ -197,7 +209,7 @@ else
 	BUILDNAME_GLOB="${BUILDNAME_GLOB}" SHOW_FINISHED=1 \
 	    for_each_build echo_logdir | \
 	    xargs -0 -J {} \
-	    find {} -type d -mindepth 0 -maxdepth 0 -Btime +${DAYS}d \
+	    find -x {} -type d -mindepth 0 -maxdepth 0 -Btime +${DAYS}d \
 	    > "${OLDLOGS}"
 fi
 echo " done"
@@ -214,7 +226,7 @@ if [ ${ret} -eq 1 ]; then
 fi
 
 # Save which builds were modified for later html_json rewriting
-DELETED_BUILDS="$(cat "${OLDLOGS}" | cut -d / -f 1 | sort -u)"
+MASTERNAMES_TOUCHED="$(cat "${OLDLOGS}" | cut -d / -f 1 | sort -u)"
 
 # Once that is done, we have a latest-per-pkg links to cleanup.
 reason="detached latest-per-pkg logfiles in ${log_top} (no filter)"
@@ -244,23 +256,52 @@ else
 fi
 
 if [ ${logs_deleted} -eq 1 ]; then
+	[ "${DRY_RUN}" -eq 0 ] || err 1 "Would delete files with dry-run"
 
-	msg_n "Updating latest-per-pkg links for deleted builds..."
-	for build in ${DELETED_BUILDS}; do
-		echo -n " ${build}..."
-		find ${build} -maxdepth 2 -mindepth 2 -name logs -print0 | \
-		    xargs -0 -J % find % -mindepth 1 -maxdepth 1 -type f | \
+	msg_n "Fixing latest symlinks..."
+	for MASTERNAME in ${MASTERNAMES_TOUCHED}; do
+		echo -n "${MASTERNAME}..."
+		latest=$(find -x "${MASTERNAME}" -mindepth 2 -maxdepth 2 \
+		    \( -type d -name 'latest*' -prune \) -o \
+		    -type f -name .poudriere.status \
+		    -print | sort -u -d | tail -n 1 | \
+		    awk -F / '{print $(NF - 1)}')
+		rm -f "${MASTERNAME}/latest"
+		[ -z "${latest}" ] && continue
+		ln -s "${latest}" "${MASTERNAME}/latest"
+	done
+	echo " done"
+
+	msg_n "Fixing latest-done symlinks..."
+	for MASTERNAME in ${MASTERNAMES_TOUCHED}; do
+		echo -n "${MASTERNAME}..."
+		latest_done=$(find -x "${MASTERNAME}" -mindepth 2 -maxdepth 2 \
+		    \( -type d -name 'latest*' -prune \) -o \
+		    -type f -name .poudriere.status \
+		    -exec grep -l done: {} + | sort -u -d | tail -n 1 | \
+		    awk -F / '{print $(NF - 1)}')
+		rm -f "${MASTERNAME}/latest-done"
+		[ -z "${latest_done}" ] && continue
+		ln -s "${latest_done}" "${MASTERNAME}/latest-done"
+	done
+	echo " done"
+
+	msg_n "Updating latest-per-pkg links..."
+	for MASTERNAME in ${MASTERNAMES_TOUCHED}; do
+		echo -n " ${MASTERNAME}..."
+		find -x "${MASTERNAME}" -maxdepth 2 -mindepth 2 -name logs -print0 | \
+		    xargs -0 -J % find -x % -mindepth 1 -maxdepth 1 -type f | \
 		    sort -d | \
 		    awk -F/ '{if (!printed[$4]){print $0; printed[$4]=1;}}' | \
 		    while read log; do
 			filename="${log##*/}"
-			dst="${build}/latest-per-pkg/${filename}"
+			dst="${MASTERNAME}/latest-per-pkg/${filename}"
 			[ -f "${dst}" ] && continue
 			ln "${log}" "${dst}"
 			pkgname="${filename%.log}"
 			pkgbase="${pkgname%-*}"
 			pkgver="${pkgname##*-}"
-			latest_dst="latest-per-pkg/${pkgbase}/${pkgver}/${build}.log"
+			latest_dst="latest-per-pkg/${pkgbase}/${pkgver}/${MASTERNAME}.log"
 			mkdir -p "${latest_dst%/*}"
 			ln "${log}" "${latest_dst}"
 		done
@@ -268,26 +309,38 @@ if [ ${logs_deleted} -eq 1 ]; then
 	echo " done"
 
 	msg_n "Removing empty build log directories..."
-	echo "${DELETED_BUILDS}" | sed -e 's,$,/latest-per-pkg,' | \
+	echo "${MASTERNAMES_TOUCHED}" | sed -e 's,$,/latest-per-pkg,' | \
 	    tr '\n' '\000' | \
-	    xargs -0 -J % find % -mindepth 0 -maxdepth 0 -empty | \
+	    xargs -0 -J % find -x % -mindepth 0 -maxdepth 0 -empty | \
 	    sed -e 's,$,/..,' | xargs realpath | tr '\n' '\000' | \
 	    xargs -0 rm -rf
 	echo " done"
 
 	msg "Rebuilding HTML JSON files..."
-	for MASTERNAME in ${DELETED_BUILDS}; do
+	for MASTERNAME in ${MASTERNAMES_TOUCHED}; do
 		# Was this build eliminated?
 		[ -d "${MASTERNAME}" ] || continue
 		msg_n "Rebuilding HTML JSON for: ${MASTERNAME}..."
 		_log_path_jail log_path_jail
-		build_jail_json || :
+		if slock_acquire "json_jail_${MASTERNAME}" 60 2>/dev/null; then
+			build_jail_json || :
+			slock_release "json_jail_${MASTERNAME}"
+		fi
 		echo " done"
 	done
 	msg_n "Rebuilding HTML JSON for top-level..."
 	log_path_top="${log_top}"
-	build_top_json || :
+	if slock_acquire "json_top" 60 2>/dev/null; then
+		build_top_json || :
+		slock_release "json_top"
+	fi
 	echo " done"
+elif [ "${DRY_RUN}" -eq 1 ]; then
+	msg "[Dry Run] Would fix latest symlinks..."
+	msg "[Dry Run] Would fix latest-done symlinks..."
+	msg "[Dry Run] Would fix latest-per-pkg links..."
+	msg "[Dry Run] Would remove builds with no logs..."
+	msg "[Dry Run] Would rebuild HTML JSON files..."
 fi
 
 exit 0

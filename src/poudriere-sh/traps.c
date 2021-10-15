@@ -37,7 +37,6 @@
 #include <errno.h>
 #include "helpers.h"
 #include "var.h"
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
 
 extern int rootpid;
 static int critsnest;
@@ -68,11 +67,12 @@ trap_pushcmd(int argc, char **argv)
 	int nextidx, idx, signo;
 
 	if (argc != 3)
-		errx(EXIT_USAGE, "%s", "Usage: trap_push <signal> <var_return>");
+		errx(EX_USAGE, "%s", "Usage: trap_push <signal> <var_return>");
 
 	if ((signo = signame_to_signum(argv[1])) == -1)
 		errx(EX_DATAERR, "Invalid signal %s", argv[1]);
 
+	INTOFF;
 	nextidx = -1;
 	for (idx = 0; idx < MAX_SIGNALS; idx++) {
 		if (signals[idx] == NULL) {
@@ -83,7 +83,6 @@ trap_pushcmd(int argc, char **argv)
 	if (nextidx == -1)
 		errx(EX_SOFTWARE, "%s", "Signal stack exceeded");
 
-	INTOFF;
 	sd = calloc(1, sizeof(*sd));
 	trap_push_sh(signo, sd);
 
@@ -97,7 +96,7 @@ trap_pushcmd(int argc, char **argv)
 }
 
 int
-critical_startcmd(int argc, char **argv)
+critical_startcmd(int argc __unused, char **argv __unused)
 {
 	sigset_t sigmask;
 
@@ -114,7 +113,7 @@ critical_startcmd(int argc, char **argv)
 }
 
 int
-critical_endcmd(int argc, char **argv)
+critical_endcmd(int argc __unused, char **argv __unused)
 {
 
 	if (critsnest == 0) {
@@ -138,7 +137,7 @@ trap_popcmd(int argc, char **argv)
 	int signo, idx;
 
 	if (argc != 3)
-		errx(EXIT_USAGE, "%s", "Usage: trap_popcmd <signal> <saved_trap>");
+		errx(EX_USAGE, "%s", "Usage: trap_popcmd <signal> <saved_trap>");
 
 	if ((signo = signame_to_signum(argv[1])) == -1)
 		errx(EX_DATAERR, "Invalid signal %s", argv[1]);
@@ -147,11 +146,11 @@ trap_popcmd(int argc, char **argv)
 	idx = strtod(argv[2], &end);
 	if (end == argv[2] || errno == ERANGE || idx < 0 || idx >= MAX_SIGNALS)
 		errx(EX_DATAERR, "%s", "Invalid saved_trap");
+	INTOFF;
 	sd = signals[idx];
 	if (sd == NULL || sd->signo != signo)
 		errx(EX_DATAERR, "%s", "Invalid saved_trap");
 
-	INTOFF;
 	trap_pop(sd->signo, sd);
 	free(signals[idx]);
 	signals[idx] = NULL;

@@ -38,3 +38,139 @@ struct sigdata {
 void trap_push(int signo, struct sigdata *sd);
 void trap_push_sh(int signo, struct sigdata *sd);
 void trap_pop(int signo, struct sigdata *sd);
+
+#ifdef SHELL
+#include <errno.h>
+
+/*
+ * fprintf(stderr) and fprintf(stdout) are defined special to use
+ * the shell buffering.
+ * Any other functions can use stdio as long as they undef what they
+ * use from here. No mixing between stdio functions and the shell
+ * builtins can be done.
+ */
+#undef FILE
+#define FILE MUST_UNDEF_STDIO_FUNCTIONS_AND_NOT_MIX_WITH_FPRINTF
+#define fclose MUST_UNDEF_STDIO_FUNCTIONS_AND_NOT_MIX_WITH_FPRINTF
+#define fdclose MUST_UNDEF_STDIO_FUNCTIONS_AND_NOT_MIX_WITH_FPRINTF
+#define fdcloseall MUST_UNDEF_STDIO_FUNCTIONS_AND_NOT_MIX_WITH_FPRINTF
+#define fdopen MUST_UNDEF_STDIO_FUNCTIONS_AND_NOT_MIX_WITH_FPRINTF
+#define fmemopen MUST_UNDEF_STDIO_FUNCTIONS_AND_NOT_MIX_WITH_FPRINTF
+#define fopen MUST_UNDEF_STDIO_FUNCTIONS_AND_NOT_MIX_WITH_FPRINTF
+#define freopen MUST_UNDEF_STDIO_FUNCTIONS_AND_NOT_MIX_WITH_FPRINTF
+
+#define err_set_exit notimplemented
+#define err_set_file notimplemented
+#define verrc notimplemented
+#define verrx notimplemented
+#define vwarn notimplemented
+#define vwarnc notimplemented
+#undef err
+#undef errc
+#undef errx
+#undef verrx
+#undef vwarnx
+#undef warn
+#undef warnc
+#undef warnx
+
+#define warnx 			warning
+#define vwarnx			vwarning
+#define warnc(code, fmt, ...) 	warnx(fmt ": %s", ##__VA_ARGS__, strerror(code))
+#define warn(...) 		warnc(errno, __VA_ARGS__)
+
+#define errx 			errorwithstatus
+#define verrx			verrorwithstatus
+#define errc(exitstatus, code, fmt, ...) \
+    errx(exitstatus, fmt ": %s", ##__VA_ARGS__, strerror(code))
+#define err(exitstatus, ...) 	errc(exitstatus, errno, __VA_ARGS__)
+
+#define getenv(var) bltinlookup(var, 1)
+
+#include "shell.h"
+
+void * ckmalloc(size_t);
+void * ckrealloc(void *, int);
+void ckfree(void *);
+
+#define malloc ckmalloc
+#define realloc ckrealloc
+#define free ckfree
+
+/* This kinda works but does not free memory, close fd, or INTON. */
+#undef exit
+extern int exitstatus;
+void flushall(void);
+void verrorwithstatus(int, const char *, va_list) __printf0like(2, 0) __dead2;
+/* https://stackoverflow.com/a/25172698/285734 */
+#define exit(...)		exit_(_, ##__VA_ARGS__)
+#define exit_(...)		exit_X(__VA_ARGS__, _1, _0)(__VA_ARGS__)
+#define exit_X(_0, _1, X, ...)	exit ## X
+#define exit_0(_)		return (0)
+#define exit_1(_, status)	verrorwithstatus(status, NULL, NULL)
+
+/* Getopt compat */
+#include "options.h"
+#ifndef _NEED_SH_FLAGS
+#undef Aflag
+#undef Bflag
+#undef Cflag
+#undef Dflag
+#undef Eflag
+#undef Fflag
+#undef Gflag
+#undef Hflag
+#undef Iflag
+#undef Jflag
+#undef Kflag
+#undef Lflag
+#undef Mflag
+#undef Nflag
+#undef Oflag
+#undef Pflag
+#undef Qflag
+#undef Rflag
+#undef Sflag
+#undef Tflag
+#undef Uflag
+#undef Vflag
+#undef Wflag
+#undef Xflag
+#undef Yflag
+#undef Zflag
+#undef aflag
+#undef bflag
+#undef cflag
+#undef dflag
+#undef eflag
+#undef fflag
+#undef gflag
+#undef hflag
+#undef iflag
+#undef jflag
+#undef kflag
+#undef lflag
+#undef mflag
+#undef nflag
+#undef oflag
+#undef pflag
+#undef qflag
+#undef rflag
+#undef sflag
+#undef tflag
+#undef uflag
+#undef vflag
+#undef wflag
+#undef xflag
+#undef yflag
+#undef zflag
+#endif
+
+#undef getopt
+#define getopt pgetopt
+#undef optopt
+#undef opterr
+#undef optreset
+int pgetopt(int argc, char *argv[], const char *optstring);
+
+#endif

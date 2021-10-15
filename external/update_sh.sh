@@ -48,8 +48,17 @@ sed -i '' -Ee 's,^static (char sigmode|char \*volatile trap|volatile sig_atomic_
     "${DESTDIR}/trap.c"
 
 git add -A "${DESTDIR}"
+{
 cat <<EOF
-sh_SOURCES=		external/sh_compat/strchrnul.c \\
-			external/sh_compat/utimensat.c \\
+external/sh_compat/strchrnul.c
+external/sh_compat/utimensat.c
 EOF
-find "${DESTDIR}" -name '*.c'|sed -e 's,^,			,' -e 's,$, \\,'|sort
+find "${DESTDIR}" -name '*.c' -o -name '*.h' -o -name '*.def' -o -name 'mk*'
+} | sed -e 's,^,	,' | sort | \
+{
+	echo "sh_SOURCES="
+	cat
+} | sed -e '$ ! s,$, \\,' \
+    > external/sh/Makefile.sources
+git add -f external/sh/Makefile.sources
+find external/patches/sh -type f -exec git am {} +

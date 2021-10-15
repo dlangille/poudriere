@@ -75,6 +75,7 @@ if [ ${USE_COLORS} = "no" ]; then
 	COLOR_ERROR=
 	COLOR_SUCCESS=
 	COLOR_IGNORE=
+	COLOR_FETCHED=
 	COLOR_SKIP=
 	COLOR_FAIL=
 	COLOR_PHASE=
@@ -91,6 +92,7 @@ else
 	: ${COLOR_ERROR:=${COLOR_RED}}
 	: ${COLOR_SUCCESS:=${COLOR_GREEN}}
 	: ${COLOR_IGNORE:=${COLOR_DARK_GRAY}}
+	: ${COLOR_FETCHED:=${COLOR_LIGHT_GREEN}}
 	: ${COLOR_SKIP:=${COLOR_YELLOW}}
 	: ${COLOR_FAIL:=${COLOR_RED}}
 	: ${COLOR_PHASE:=${COLOR_LIGHT_MAGENTA}}
@@ -114,7 +116,7 @@ colorize_job_id() {
 	fi
 
 	# Writing this list was painful
-	case $(((${id} - 1) % ${MAXCOLORS})) in
+	case $(((id - 1) % MAXCOLORS)) in
 	0)   color="${COLOR_RED}" ;;
 	1)   color="${COLOR_GREEN}" ;;
 	2)   color="${COLOR_BROWN}" ;;
@@ -268,9 +270,9 @@ test_colors() {
 
 	i=1
 
-	while [ $i -le $((${MAXCOLORS} * 2)) ]; do
+	while [ $i -le $((MAXCOLORS * 2)) ]; do
 		colorize_job_id job_color "$i"
 		printf -- "--- [${job_color}%03d${COLOR_RESET}] ---\n" "${i}"
-		i=$((${i} + 1))
+		i=$((i + 1))
 	done
 }

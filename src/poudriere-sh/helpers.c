@@ -24,16 +24,22 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <sys/types.h>
+#include <sys/sbuf.h>
+
+#include <assert.h>
 #include <errno.h>
+#include <fnmatch.h>
 #include <signal.h>
 #include <string.h>
-
-#include "helpers.h"
+#include <stdlib.h>
+#include <sysexits.h>
 
 #include "bltin/bltin.h"
-#include "options.h"
 #include "syntax.h"
 #include "var.h"
+#define _NEED_SH_FLAGS
+#include "helpers.h"
 
 extern int rootshell;
 
@@ -42,7 +48,6 @@ extern char *volatile trap[NSIG];	/* trap handler commands */
 extern char sigmode[NSIG];	/* current value of signal */
 extern char *savestr(const char *);
 extern void onsig(int);
-extern void ckfree(pointer);
 #define S_DFL 1			/* default signal handling (SIG_DFL) */
 #define S_CATCH 2		/* signal is caught */
 #define S_IGN 3			/* signal is ignored (SIG_IGN) */
@@ -163,18 +168,25 @@ trap_pop(int signo, struct sigdata *sd)
 int
 getvarcmd(int argc, char **argv)
 {
-	char *value;
+	const char *value;
+	int ret;
 
-	if (argc != 3)
-		errx(EX_USAGE, "%s", "Usage: getvar <var> <var_return>");
+	if (argc != 2 && argc != 3)
+		errx(EX_USAGE, "%s", "Usage: getvar <var> [var_return]");
 
+	value = NULL;
+	ret = 0;
 	if ((value = lookupvar(argv[1])) == NULL) {
-		setvar(argv[2], "", 0);
-		return (1);
+		value = "";
+		ret = 1;
+		goto out;
 	}
-
-	setvar(argv[2], value, 0);
-	return (0);
+out:
+	if (argc == 3)
+		setvar(argv[2], value, 0);
+	else
+		printf("%s\n", value);
+	return (ret);
 }
 
 int
@@ -193,9 +205,10 @@ _gsub_var_namecmd(int argc, char **argv)
 	char *n;
 	char newvar[512];
 
-	if (argc != 2)
-		errx(EX_USAGE, "%s", "Usage: _gsub_var_name <var>");
+	if (argc != 3)
+		errx(EX_USAGE, "%s", "Usage: _gsub_var_name <var> <var_return>");
 	const char *string = argv[1];
+	const char *var_return = argv[2];
 	n = newvar;
 	for (const char *p = string; *p != '\0'; ++p) {
 		if (!is_in_name(*p))
@@ -206,20 +219,22 @@ _gsub_var_namecmd(int argc, char **argv)
 			errx(EX_DATAERR, "var too long");
 	}
 	*n = '\0';
-	setvar("_gsub", newvar, 0);
+	setvar(var_return, newvar, 0);
 	return (0);
 }
 
 int
-_gsub_simplecmd(int argc, char **argv)
+_gsub_badcharscmd(int argc, char **argv)
 {
 	char *n;
 	char newvar[512];
 
-	if (argc != 3)
-		errx(EX_USAGE, "%s", "Usage: _gsub_simple <var> <badchars>");
+	if (argc != 4)
+		errx(EX_USAGE, "%s", "Usage: _gsub_badchars <var> <badchars> "
+		    "<var_return>");
 	const char *string = argv[1];
 	const char *badchars = argv[2];
+	const char *var_return = argv[3];
 	n = newvar;
 	for (const char *p = string; *p != '\0'; ++p) {
 		if (strchr(badchars, *p) != NULL)
@@ -230,6 +245,255 @@ _gsub_simplecmd(int argc, char **argv)
 			errx(EX_DATAERR, "var too long");
 	}
 	*n = '\0';
-	setvar("_gsub", newvar, 0);
+	setvar(var_return, newvar, 0);
+	return (0);
+}
+
+static int
+_gsub_shell(struct sbuf *newstr, char *string, const char *pattern,
+    size_t pattern_len, const char *replacement, size_t replacement_len,
+    char *buf, size_t bufsiz)
+{
+	char *p, *c;
+	char save;
+	int ret;
+
+	char pattern_r[pattern_len + 2];
+	snprintf(pattern_r, sizeof(pattern_r), "%s*", pattern);
+
+	ret = 0;
+	INTOFF;
+	if (sbuf_new(newstr, buf, bufsiz, SBUF_AUTOEXTEND) == NULL) {
+		INTON;
+		errx(EX_SOFTWARE, "%s", "sbuf_new");
+	}
+	/*
+	 * fnmatch(3) doesn't return the length matched so we need to
+	 * look at increasingly larger substrings to find a match to
+	 * replace. This is similar to how sh does it in subevalvar_trim()
+	 * as well. Not great but the other builtin cases in _gsub might make
+	 * this worth it.
+	 */
+	for (p = string; *p != '\0'; ++p) {
+		/*
+		 * Before going O(n^n) see if the pattern starts at this
+		 * point. If so then we need to look for the end.
+		 */
+		if (fnmatch(pattern_r, p, 0) != 0) {
+			sbuf_putc(newstr, *p);
+			continue;
+		}
+		/*
+		 * Search for the smallest match since fnmatch(3) doesn't
+		 * return that length for us.
+		 */
+		for (c = p + 1; *(c - 1) != '\0'; ++c) {
+			save = *c;
+			*c = '\0';
+			if (fnmatch(pattern, p, 0) == 0) {
+				/* Found a match. */
+				sbuf_bcat(newstr, replacement,
+				    replacement_len);
+				*c = save;
+				p = c - 1;
+				break; /* next p */
+			} else if (save == '\0') {
+				/*
+				 * The rest of the string doesn't match.
+				 * Take 1 character and try fnmatching
+				 * on the next range. Ick.
+				 */
+				sbuf_putc(newstr, *p);
+			}
+			*c = save;
+		}
+	}
+
+	sbuf_finish(newstr);
+	return (ret);
+}
+
+static int
+_gsub_inplace(char *string, const char pattern, const char replacement)
+{
+
+	for (char *p = string; *p != '\0'; ++p) {
+		if (*p == pattern)
+			*p = replacement;
+	}
+	return (0);
+}
+
+static int
+_gsub_shift(char *string, const char pattern)
+{
+	char *shift;
+
+	shift = NULL;
+	for (char *p = string; *p != '\0'; ++p) {
+		if (shift != NULL && *p != pattern)
+			*shift++ = *p;
+		else if (shift == NULL && *p == pattern)
+			shift = p;
+	}
+	if (shift != NULL)
+		*shift = '\0';
+	return (0);
+}
+
+static int
+_gsub_strstr(struct sbuf *newstr, const char *string, const char *pattern,
+    size_t pattern_len, const char *replacement, size_t replacement_len,
+    char *buf, size_t bufsiz)
+{
+	const char *p, *p2;
+	size_t string_len, new_len;
+	int ret, replacements;
+
+	ret = replacements = string_len = new_len = 0;
+	/* Get the string size and count how many replacements there are. */
+	for (p = string; (p2 = strstr(p, pattern)) != NULL; p2 += pattern_len,
+	    p = p2) {
+		string_len += p2 - p + pattern_len;
+		++replacements;
+	}
+	if ((p2 = strchr(p, '\0')) != NULL)
+		string_len += p2 - p;
+	new_len = string_len +
+	    ((replacement_len - pattern_len) * replacements) + 1;
+	if (new_len > 1024) {
+		buf = NULL;
+		bufsiz = new_len;
+	}
+	INTOFF;
+	if (sbuf_new(newstr, buf, bufsiz, SBUF_FIXEDLEN) == NULL) {
+		INTON;
+		errx(EX_SOFTWARE, "%s", "sbuf_new");
+	}
+	for (p = string; (p2 = strstr(p, pattern)) != NULL; p2 += pattern_len,
+	    p = p2) {
+		sbuf_bcat(newstr, p, p2 - p);
+		sbuf_cat(newstr, replacement);
+	}
+	sbuf_cat(newstr, p);
+	sbuf_finish(newstr);
+	return (ret);
+}
+
+static int
+_gsub(char **argv, const char *var_return)
+{
+	struct sbuf newstr = {};
+	const char *pattern, *replacement, *p;
+	char buf[1024], *string, *outstr;
+	size_t pattern_len, replacement_len;
+	int ret;
+	bool match_shell, sbuf_free;
+#ifndef NDEBUG
+	const int inton = is_int_on();
+#endif
+
+	ret = 0;
+	string = argv[1];
+	pattern = argv[2];
+	replacement = argv[3];
+	replacement_len = strlen(replacement);
+	buf[0] = '\0';
+	sbuf_free = false;
+	outstr = NULL;
+
+	match_shell = false;
+	pattern_len = 0;
+	for (p = pattern; *p != '\0'; ++p) {
+		++pattern_len;
+		if (!match_shell && strchr("*?[", *p) != NULL)
+			match_shell = true;
+	}
+	if (pattern_len == 0) {
+		outstr = string;
+		goto empty_pattern;
+	}
+	if (match_shell) {
+		ret = _gsub_shell(&newstr, string, pattern, pattern_len,
+		    replacement, replacement_len, buf, sizeof(buf));
+		assert(is_int_on());
+	} else if (pattern_len == 1 && replacement_len == 1) {
+		ret = _gsub_inplace(string, *pattern, *replacement);
+		outstr = string;
+		assert(inton == is_int_on());
+	} else if (pattern_len == 1 && replacement_len == 0) {
+		ret = _gsub_shift(string, *pattern);
+		outstr = string;
+		assert(inton == is_int_on());
+	} else {
+		ret = _gsub_strstr(&newstr, string, pattern, pattern_len,
+		    replacement, replacement_len, buf, sizeof(buf));
+		assert(is_int_on());
+	}
+	if (ret != 0)
+		goto out;
+	if (outstr == NULL) {
+		outstr = sbuf_data(&newstr);
+		sbuf_free = true;
+	}
+empty_pattern:
+	if (var_return == NULL)
+		printf("%s\n", outstr);
+	else
+		setvar(var_return, outstr, 0);
+	if (sbuf_free) {
+		assert(is_int_on());
+		sbuf_delete(&newstr);
+		INTON;
+	}
+out:
+	assert(inton == is_int_on());
+	return (ret);
+}
+
+int
+_gsubcmd(int argc, char **argv)
+{
+	const char *var_return;
+
+	if (argc != 4 && argc != 5)
+		errx(EX_USAGE, "%s", "Usage: _gsub <string> <pattern> "
+		    "<replacement> [var_return]");
+	var_return = argc == 5 && argv[4][0] != '\0' ? argv[4] : "_gsub";
+	return (_gsub(argv, var_return));
+}
+
+int
+gsubcmd(int argc, char **argv)
+{
+	const char *var_return;
+
+	if (argc != 4 && argc != 5)
+		errx(EX_USAGE, "%s", "Usage: gsub <string> <pattern> "
+		    "<replacement> [var_return]");
+	var_return = argc == 5 && argv[4][0] != '\0' ? argv[4] : NULL;
+	return (_gsub(argv, var_return));
+}
+
+int
+pgetopt(int argc, char *argv[], const char *optstring)
+{
+	int ch;
+
+	shoptarg = NULL;
+	ch = nextopt(optstring);
+	if (ch == '\0')
+		ch = -1;
+	optarg = shoptarg;
+	optind = argptr - argv;
+	return (ch);
+}
+
+/* $$ is not correct in subshells. */
+int
+getpidcmd(int argc, char **argv)
+{
+
+	fprintf(stdout, "%ld\n", (long)getpid());
 	return (0);
 }

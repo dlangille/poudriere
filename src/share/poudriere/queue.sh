@@ -25,18 +25,18 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 
+. ${SCRIPTPREFIX}/common.sh
+
 usage() {
 	echo "poudriere queue poudriere_command"
-	exit 1
+	exit ${EX_USAGE}
 }
-
-. ${SCRIPTPREFIX}/common.sh
 
 [ $# -lt 2 ] && usage
 
 case $1 in
 bulk|testport) cmd=$1 ; shift ;;
-*) err 1 "$2 command cannot be queued" ;;
+*) err 1 "$1 command cannot be queued" ;;
 esac
 
 # Queue the command through the poudriered socket

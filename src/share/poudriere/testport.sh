@@ -26,6 +26,8 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 
+. ${SCRIPTPREFIX}/common.sh
+
 usage() {
 	cat << EOF
 poudriere testport [parameters] [options]
@@ -38,6 +40,9 @@ Options:
     -B name     -- What buildname to use (must be unique, defaults to
                    YYYY-MM-DD_HH:MM:SS). Resuming a previous build will not
                    retry built/failed/skipped/ignored packages.
+    -b branch   -- Branch to choose for fetching packages from official
+                   repositories: valid options are: latest, quarterly,
+                   release_*, or a url.
     -c          -- Run make config for the given port
     -i          -- Interactive mode. Enter jail for interactive testing and
                    automatically cleanup when done.
@@ -50,9 +55,10 @@ Options:
     -k          -- Don't consider failures as fatal; find all failures.
     -n          -- Dry-run. Show what will be done, but do not build
                    any packages.
-    -N          -- Do not build package repository when build of dependencies
-                   completed
-    -p tree     -- Specify the path to the portstree
+    -N          -- Do not build package repository when build is completed
+    -NN         -- Do not commit package repository when build is completed
+    -O overlays -- Specify extra ports trees to overlay
+    -p tree     -- Specify the path to the ports tree
     -P          -- Use custom prefix
     -S          -- Don't recursively rebuild packages affected by other
                    packages requiring incremental rebuild. This can result
@@ -63,11 +69,10 @@ Options:
     -w          -- Save WRKDIR on failed builds
     -z set      -- Specify which SET to use
 EOF
-	exit 1
+	exit ${EX_USAGE}
 }
 
 CONFIGSTR=0
-. ${SCRIPTPREFIX}/common.sh
 NOPREFIX=1
 DRY_RUN=0
 SETNAME=""
@@ -75,9 +80,15 @@ SKIP_RECURSIVE_REBUILD=0
 INTERACTIVE_MODE=0
 PTNAME="default"
 BUILD_REPO=1
+OVERLAYS=""
+COMMIT=1
 
-while getopts "B:o:cniIj:J:kNp:PSvwz:" FLAG; do
+while getopts "b:B:o:cniIj:J:kNO:p:PSvwz:" FLAG; do
 	case "${FLAG}" in
+		b)
+			PACKAGE_FETCH_BRANCH="${OPTARG}"
+			validate_package_branch "${PACKAGE_FETCH_BRANCH}"
+			;;
 		B)
 			BUILDNAME="${OPTARG}"
 			;;
@@ -111,7 +122,22 @@ while getopts "B:o:cniIj:J:kNp:PSvwz:" FLAG; do
 			INTERACTIVE_MODE=2
 			;;
 		N)
+			: ${NFLAG:=0}
+			NFLAG=$((NFLAG + 1))
 			BUILD_REPO=0
+			if [ "${NFLAG}" -eq 2 ]; then
+				# Don't commit the packages.  This is effectively
+				# the same as -n but does an actual build.
+				if [ "${ATOMIC_PACKAGE_REPOSITORY}" != "yes" ]; then
+					err ${EX_USAGE} "-NN only makes sense with ATOMIC_PACKAGE_REPOSITORY=yes"
+				fi
+				COMMIT=0
+			fi
+			;;
+		O)
+			porttree_exists ${OPTARG} ||
+			    err 2 "No such overlay ${OPTARG}"
+			OVERLAYS="${OVERLAYS} ${OPTARG}"
 			;;
 		p)
 			porttree_exists ${OPTARG} ||
@@ -132,7 +158,7 @@ while getopts "B:o:cniIj:J:kNp:PSvwz:" FLAG; do
 			SETNAME="${OPTARG}"
 			;;
 		v)
-			VERBOSE=$((${VERBOSE} + 1))
+			VERBOSE=$((VERBOSE + 1))
 			;;
 		*)
 			usage
@@ -165,7 +191,7 @@ export MASTERNAME
 export MASTERMNT
 export POUDRIERE_BUILD_TYPE=bulk
 
-jail_start ${JAILNAME} ${PTNAME} ${SETNAME}
+jail_start "${JAILNAME}" "${PTNAME}" "${SETNAME}"
 
 _pget portsdir ${PTNAME} mnt
 fetch_global_port_vars || \
@@ -198,11 +224,12 @@ if [ -n "${new_origin}" ]; then
 	# Update ORIGINSPEC for the new ORIGIN
 	originspec_encode ORIGINSPEC "${ORIGIN}" "${DEPENDS_ARGS}" "${FLAVOR}"
 fi
-if [ ! -f "${portsdir}/${ORIGIN}/Makefile" ] || [ -d "${portsdir}/${ORIGIN}/../Mk" ]; then
+_lookup_portdir portdir "${ORIGIN}"
+if [ "${portdir}" = "${PORTSDIR}/${ORIGIN}" ] && [ ! -f "${portsdir}/${ORIGIN}/Makefile" ] || [ -d "${portsdir}/${ORIGIN}/../Mk" ]; then
 	err 1 "Nonexistent origin ${COLOR_PORT}${ORIGIN}${COLOR_RESET}"
 fi
 
-injail /usr/bin/make -C ${PORTSDIR}/${ORIGIN} maintainer ECHO_CMD=true || \
+injail /usr/bin/make -C ${portdir} maintainer ECHO_CMD=true || \
     err 1 "Port is broken"
 
 if [ $CONFIGSTR -eq 1 ]; then
@@ -213,7 +240,7 @@ if [ $CONFIGSTR -eq 1 ]; then
 	    __MAKE_CONF="${__MAKE_CONF}" \
 	    PORT_DBDIR=${MASTERMNT}/var/db/ports \
 	    TERM=${SAVED_TERM} \
-	    make -C ${portsdir}/${ORIGIN} \
+	    make -C "${MASTERMNT}${portdir}" \
 	    ${FLAVOR:+FLAVOR=${FLAVOR}} \
 	    config
 	rm -f "${__MAKE_CONF}"
@@ -241,6 +268,7 @@ if [ $(bget stats_failed) -gt 0 ] || [ $(bget stats_skipped) -gt 0 ]; then
 	    msg "${COLOR_SKIP}Skipped ports: ${COLOR_PORT}${skipped}"
 
 	bset_job_status "failed/depends" "${ORIGINSPEC}" "${PKGNAME}"
+	show_log_info
 	set +e
 	exit 1
 fi
@@ -252,19 +280,19 @@ commit_packages
 
 bset_job_status "testing" "${ORIGINSPEC}" "${PKGNAME}"
 
-LOCALBASE=`injail /usr/bin/make -C ${PORTSDIR}/${ORIGIN} -VLOCALBASE`
+LOCALBASE=`injail /usr/bin/make -C ${portdir} -VLOCALBASE`
 [ -n "${LOCALBASE}" ] || err 1 "Port has empty LOCALBASE?"
-: ${PREFIX:=$(injail /usr/bin/make -C ${PORTSDIR}/${ORIGIN} -VPREFIX)}
+: ${PREFIX:=$(injail /usr/bin/make -C ${portdir} -VPREFIX)}
 [ -n "${PREFIX}" ] || err 1 "Port has empty PREFIX?"
 if [ "${USE_PORTLINT}" = "yes" ]; then
 	[ ! -x `command -v portlint` ] &&
 		err 2 "First install portlint if you want USE_PORTLINT to work as expected"
 	msg "Portlint check"
-	set +e
-	cd ${MASTERMNT}${PORTSDIR}/${ORIGIN} &&
-		PORTSDIR="${MASTERMNT}${PORTSDIR}" portlint -C | \
-		tee ${log}/logs/${PKGNAME}.portlint.log
-	set -e
+	(
+		cd ${MASTERMNT}${portdir} &&
+			PORTSDIR="${MASTERMNT}${PORTSDIR}" portlint -C | \
+			tee ${log}/logs/${PKGNAME}.portlint.log
+	) || :
 fi
 [ ${NOPREFIX} -ne 1 ] && PREFIX="${BUILDROOT:-/prefix}/`echo ${PKGNAME} | tr '[,+]' _`"
 [ "${PREFIX}" != "${LOCALBASE}" ] && PORT_FLAGS="PREFIX=${PREFIX}"
@@ -287,8 +315,8 @@ if ! [ -t 1 ]; then
 	export DEV_WARNING_WAIT=0
 fi
 sed -i '' '/DISABLE_MAKE_JOBS=poudriere/d' ${MASTERMNT}/etc/make.conf
-_gsub "${PKGNAME%-*}" "${HASH_VAR_NAME_SUB_GLOB}" '_'
-eval "MAX_FILES=\${MAX_FILES_${_gsub}:-${DEFAULT_MAX_FILES}}"
+_gsub_var_name "${PKGNAME%-*}" PKGNAME_VARNAME
+eval "MAX_FILES=\${MAX_FILES_${PKGNAME_VARNAME}:-${DEFAULT_MAX_FILES}}"
 if [ -n "${MAX_MEMORY_BYTES}" -o -n "${MAX_FILES}" ]; then
 	JEXEC_LIMITS=1
 fi
@@ -304,7 +332,7 @@ build_port "${ORIGINSPEC}" "${PKGNAME}" || ret=$?
 unset NO_ELAPSED_IN_MSG
 
 now=$(clock -monotonic)
-elapsed=$((${now} - ${TIME_START_JOB}))
+elapsed=$((now - TIME_START_JOB))
 
 if [ ${ret} -ne 0 ]; then
 	if [ ${ret} -eq 2 ]; then
@@ -317,7 +345,7 @@ if [ ${ret} -ne 0 ]; then
 	fi
 
 	save_wrkdir "${MASTERMNT}" "${ORIGINSPEC}" "${PKGNAME}" \
-	    "${PORTSDIR}/${ORIGIN}" "${failed_phase}" || :
+	    "${failed_phase}" || :
 
 	ln -s ../${PKGNAME}.log ${log}/logs/errors/${PKGNAME}.log
 	errortype=$(/bin/sh ${SCRIPTPREFIX}/processonelog.sh \
@@ -332,14 +360,15 @@ if [ ${ret} -ne 0 ]; then
 		bset_job_status "failed/${failed_phase}" "${ORIGINSPEC}" \
 		    "${PKGNAME}"
 		msg_error "Build failed in phase: ${COLOR_PHASE}${failed_phase}${COLOR_RESET}"
+		show_log_info
 		set +e
 		exit 1
 	fi
 else
 	badd ports.built "${ORIGINSPEC} ${PKGNAME} ${elapsed}"
-	if [ -f ${MASTERMNT}${PORTSDIR}/${ORIGIN}/.keep ]; then
+	if [ -f ${MASTERMNT}${portdir}/.keep ]; then
 		save_wrkdir "${MASTERMNT}" "${ORIGINSPEC}" "${PKGNAME}" \
-		    "${PORTSDIR}/${ORIGIN}" "noneed" || :
+		    "noneed" || :
 	fi
 	update_stats || :
 fi
@@ -358,6 +387,7 @@ if [ ${INTERACTIVE_MODE} -gt 0 ]; then
 			bset_job_status "failed/${failed_phase}" \
 			    "${ORIGINSPEC}" "${PKGNAME}"
 			msg_error "Build failed in phase: ${COLOR_PHASE}${failed_phase}${COLOR_RESET}"
+			show_log_info
 			set +e
 			exit 1
 		fi
@@ -373,12 +403,14 @@ else
 fi
 
 msg "Cleaning up"
-injail /usr/bin/make -C ${PORTSDIR}/${ORIGIN} -DNOCLEANDEPENDS clean \
+injail /usr/bin/make -C ${portdir} -DNOCLEANDEPENDS clean \
     ${MAKE_ARGS}
 
-msg "Deinstalling package"
-ensure_pkg_installed
-injail ${PKG_DELETE} ${PKGNAME}
+if [ -z "${POUDRIERE_INTERACTIVE_NO_INSTALL-}" ]; then
+	msg "Deinstalling package"
+	ensure_pkg_installed
+	injail ${PKG_DELETE} ${PKGNAME}
+fi
 
 stop_build "${PKGNAME}" "${ORIGINSPEC}" ${ret}
 log_stop

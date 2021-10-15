@@ -27,6 +27,8 @@
 
 . ${SCRIPTPREFIX}/common.sh
 
+METHOD_DEF=git+https
+
 # test if there is any args
 usage() {
 	cat << EOF
@@ -40,8 +42,8 @@ Parameters:
 
 Options:
     -U url        -- URL where to fetch the ports tree from.
-    -B branch     -- Which branch to use for the svn or git methods.  Defaults
-                     to 'head/master'.
+    -B branch     -- Which branch to use for the git or svn methods.
+    -D            -- Do a full git clone without --depth (default: --depth=1)
     -F            -- When used with -c, only create the needed filesystems
                      (for ZFS) and directories, but do not populate them.
     -M path       -- The path to the source of a ports tree.
@@ -51,41 +53,48 @@ Options:
     -k            -- When used with -d, only unregister the ports tree without
                      removing the files.
     -m method     -- When used with -c, specify the method used to create the
-                     ports tree. Possible methods are 'git', 'null', 'portsnap',
-                     'svn', 'svn+http', 'svn+https', 'svn+file', or 'svn+ssh'.
-                     The default is 'portsnap'.
+                     ports tree. Can be one of:
+		       'null', 'portsnap',
+		       '{git,svn}{,+http,+https,+file,+ssh}' (e.g., 'git+https').
+                     The default is '${METHOD_DEF}'.
     -n            -- When used with -l, only print the name of the ports tree
     -p name       -- Specifies the name of the ports tree to work on.  The
                      default is 'default'.
     -q            -- When used with -l, remove the header in the list view.
     -v            -- Show more verbose output.
 EOF
-	exit 1
+	exit ${EX_USAGE}
 }
 
-CREATE=0
 FAKE=0
-UPDATE=0
-DELETE=0
-LIST=0
 NAMEONLY=0
 QUIET=0
-VERBOSE=0
 KEEP=0
 CREATED_FS=0
-while getopts "B:cFuU:dklp:qf:nM:m:v" FLAG; do
+GIT_DEPTH=--depth=1
+COMMAND=
+
+set_command() {
+	[ -z "${COMMAND}" ] || usage
+	COMMAND="$1"
+}
+
+while getopts "B:cDFuU:dklp:qf:nM:m:v" FLAG; do
 	case "${FLAG}" in
 		B)
 			BRANCH="${OPTARG}"
 			;;
 		c)
-			CREATE=1
+			set_command create
+			;;
+		D)
+			GIT_DEPTH=""
 			;;
 		F)
 			FAKE=1
 			;;
 		u)
-			UPDATE=1
+			set_command update
 			;;
 		U)
 			SOURCES_URL=${OPTARG}
@@ -97,13 +106,13 @@ while getopts "B:cFuU:dklp:qf:nM:m:v" FLAG; do
 			PTNAME=${OPTARG}
 			;;
 		d)
-			DELETE=1
+			set_command delete
 			;;
 		k)
 			KEEP=1
 			;;
 		l)
-			LIST=1
+			set_command list
 			;;
 		q)
 			QUIET=1
@@ -118,7 +127,7 @@ while getopts "B:cFuU:dklp:qf:nM:m:v" FLAG; do
 			METHOD=${OPTARG}
 			;;
 		v)
-			VERBOSE=$((${VERBOSE} + 1))
+			VERBOSE=$((VERBOSE + 1))
 			;;
 		*)
 			usage
@@ -126,75 +135,63 @@ while getopts "B:cFuU:dklp:qf:nM:m:v" FLAG; do
 	esac
 done
 
-[ $(( CREATE + UPDATE + DELETE + LIST )) -lt 1 ] && usage
-
 saved_argv="$@"
 shift $((OPTIND-1))
 post_getopts
 
-[ ${FAKE} -eq 0 ] && METHOD=${METHOD:-portsnap}
+[ ${FAKE} -eq 0 ] && METHOD=${METHOD:-${METHOD_DEF}}
 PTNAME=${PTNAME:-default}
 
 [ "${METHOD}" = "none" ] && METHOD=null
 
-if [ -n "${SOURCES_URL}" ]; then
-	case "${METHOD}" in
-	svn*)
-		case "${SOURCES_URL}" in
-		http://*) METHOD="svn+http" ;;
-		https://*) METHOD="svn+https" ;;
-		file://*) METHOD="svn+file" ;;
-		svn+ssh://*) METHOD="svn+ssh" ;;
-		svn://*) METHOD="svn" ;;
-		*) err 1 "Invalid svn url" ;;
-		esac
-		;;
-	git*)
-		case "${SOURCES_URL}" in
-		ssh://*) METHOD="git+ssh" ;;
-		http://*) METHOD="git+http" ;;
-		https://*) METHOD="git+https" ;;
-		git://*) METHOD="git" ;;
-		file:///*) METHOD="git" ;;
-		*) err 1 "Invalid git url" ;;
-		esac
-		;;
-	*)
-		err 1 "-U only valid with git and svn methods"
-	esac
-	SVN_FULLURL=${SOURCES_URL}
-	GIT_FULLURL=${SOURCES_URL}
-else
-	case ${METHOD} in
-	portsnap);;
-	svn+http) proto="http" ;;
-	svn+https) proto="https" ;;
-	svn+ssh) proto="svn+ssh" ;;
-	svn+file) proto="file" ;;
-	svn) proto="svn" ;;
-	git+https) proto="https" ;;
-	git+ssh) proto="ssh" ;;
-	git) proto="git";;
-	null) ;;
-	*) [ ${FAKE} -eq 0 ] && usage ;;
-	esac
-	SVN_FULLURL=${proto}://${SVN_HOST}/ports
-	if [ -n "${GIT_URL}" ]; then
-		GIT_FULLURL=${GIT_URL}
-	else
-		GIT_FULLURL=${proto}://${GIT_PORTSURL}
+# Handle common (jail+ports) git/svn methods and then fallback to
+# methods only supported by jail.
+if ! svn_git_checkout_method "${SOURCES_URL}" "${METHOD}" \
+    "${SVN_HOST}/ports" "${GIT_PORTSURL}" \
+    METHOD SVN_FULLURL GIT_FULLURL; then
+	if [ -n "${SOURCES_URL}" ]; then
+		usage
 	fi
+	case "${METHOD}" in
+	portsnap) ;;
+	null) ;;
+	*)
+		if [ ${FAKE} -eq 0 ]; then
+			msg_error "Unknown method ${METHOD}"
+			usage
+		fi
+		;;
+	esac
 fi
 
 case ${METHOD} in
 svn*) : ${BRANCH:=head} ;;
-git*)  : ${BRANCH:=master} ;;
+git*) ;;
 *)
 	[ -n "${BRANCH}" ] && \
 	    err 1 "Branch (-B) only supported for SVN and git."
 esac
 
-if [ ${LIST} -eq 1 ]; then
+cleanup_new_ports() {
+	msg "Error while creating ports tree, cleaning up." >&2
+	if [ "${CREATED_FS}" -eq 1 ] && [ "${METHOD}" != "null" ]; then
+		TMPFS_ALL=0 destroyfs ${PTMNT} ports || :
+	fi
+	rm -rf ${POUDRIERED}/ports/${PTNAME} || :
+}
+
+check_portsnap_interactive() {
+	if /usr/sbin/portsnap --help | grep -q -- '--interactive'; then
+		echo "--interactive "
+	fi
+}
+
+if [ "${COMMAND}" != "list" ]; then
+	[ -z "${PTNAME}" ] && usage
+fi
+
+case $COMMAND in
+list)
 	if [ ${NAMEONLY} -eq 0 ]; then
 		format='%%-%ds %%-%ds %%-%ds %%s\n'
 		display_setup "${format}" 4 "-d"
@@ -220,33 +217,24 @@ if [ ${LIST} -eq 1 ]; then
 	EOF
 	[ ${QUIET} -eq 1 ] && quiet="-q"
 	display_output ${quiet}
-else
-	[ -z "${PTNAME}" ] && usage
-fi
+	;;
 
-cleanup_new_ports() {
-	msg "Error while creating ports tree, cleaning up." >&2
-	if [ "${CREATED_FS}" -eq 1 ] && [ "${METHOD}" != "null" ]; then
-		TMPFS_ALL=0 destroyfs ${PTMNT} ports || :
-	fi
-	rm -rf ${POUDRIERED}/ports/${PTNAME} || :
-}
-
-check_portsnap_interactive() {
-	if /usr/sbin/portsnap --help | grep -q -- '--interactive'; then
-		echo "--interactive "
-	fi
-}
-
-if [ ${CREATE} -eq 1 ]; then
+create)
+	[ ${VERBOSE} -gt 0 ] || quiet="-q"
 	# test if it already exists
 	porttree_exists ${PTNAME} && err 2 "The ports tree, ${PTNAME}, already exists"
 	maybe_run_queued "${saved_argv}"
 	: ${PTMNT="${BASEFS:=/usr/local${ZROOTFS}}/ports/${PTNAME}"}
 	: ${PTFS="${ZPOOL}${ZROOTFS}/ports/${PTNAME}"}
 
-	[ "${PTNAME#*.*}" = "${PTNAME}" ] ||
+	case "${PTNAME}" in
+	*:*)
 		err 1 "The ports name cannot contain a period (.). See jail(8)"
+		;;
+	*-*)
+		err 1 "The ports name should not contain a dash (-). Poudriere will parse it as a SETNAME (-z)."
+		;;
+	esac
 
 	if [ "${METHOD}" = "null" ]; then
 		[ -z "${PTMNT}" ] && \
@@ -294,7 +282,6 @@ if [ ${CREATE} -eq 1 ]; then
 			fi
 
 			msg_n "Checking out the ports tree..."
-			[ ${VERBOSE} -gt 0 ] || quiet="-q"
 			${SVN_CMD} ${quiet} co \
 				${SVN_PRESERVE_TIMESTAMP} \
 				${SVN_FULLURL}/${BRANCH} \
@@ -302,9 +289,14 @@ if [ ${CREATE} -eq 1 ]; then
 			echo " done"
 			;;
 		git*)
+			# !! Any changes here should be considered for jail.sh too.
+			if [ ! -x "${GIT_CMD}" ]; then
+				err 1 "Git is not installed. Perhaps you need to 'pkg install git'"
+			fi
 			msg_n "Cloning the ports tree..."
-			[ ${VERBOSE} -gt 0 ] || quiet="-q"
-			${GIT_CMD} clone --depth=1 --single-branch ${quiet} -b ${BRANCH} ${GIT_FULLURL} ${PTMNT} || err 1 " fail"
+			${GIT_CMD} clone ${GIT_DEPTH} ${quiet} \
+			    ${BRANCH:+-b ${BRANCH}} ${GIT_FULLURL} ${PTMNT} || \
+			    err 1 " fail"
 			echo " done"
 			;;
 		esac
@@ -318,9 +310,9 @@ if [ ${CREATE} -eq 1 ]; then
 	fi
 
 	unset CLEANUP_HOOK
-fi
+	;;
 
-if [ ${DELETE} -eq 1 ]; then
+delete)
 	porttree_exists ${PTNAME} || err 2 "No such ports tree ${PTNAME}"
 	PTMETHOD=$(pget ${PTNAME} method)
 	PTMNT=$(pget ${PTNAME} mnt)
@@ -349,9 +341,10 @@ if [ ${DELETE} -eq 1 ]; then
 	fi
 	rm -rf ${POUDRIERED}/ports/${PTNAME} || :
 	echo " done"
-fi
+	;;
 
-if [ ${UPDATE} -eq 1 ]; then
+update)
+	[ ${VERBOSE} -gt 0 ] || quiet="-q"
 	porttree_exists ${PTNAME} || err 2 "No such ports tree ${PTNAME}"
 	METHOD=$(pget ${PTNAME} method)
 	PTMNT=$(pget ${PTNAME} mnt)
@@ -360,7 +353,7 @@ if [ ${UPDATE} -eq 1 ]; then
 		&& err 1 "Ports tree \"${PTNAME}\" is currently mounted and being used."
 	maybe_run_queued "${saved_argv}"
 	if [ -z "${METHOD}" -o ${METHOD} = "-" ]; then
-		METHOD=portsnap
+		METHOD=${METHOD_DEF}
 		pset ${PTNAME} method ${METHOD}
 	fi
 	case ${METHOD} in
@@ -373,22 +366,24 @@ if [ ${UPDATE} -eq 1 ]; then
 		else
 			SNAPDIR=${PTMNT}/.snap
 		fi
-		/usr/sbin/portsnap ${PTARGS} -d ${SNAPDIR} -p ${PORTSMNT:-${PTMNT}} ${PSCOMMAND} alfred
+		/usr/sbin/portsnap ${PTARGS} -d ${SNAPDIR} -p ${PORTSMNT:-${PTMNT}} ${PSCOMMAND} alfred || \
+		    err 1 " fail"
 		echo " done"
 		;;
 	svn*)
 		msg_n "Updating portstree \"${PTNAME}\" with ${METHOD}..."
-		[ ${VERBOSE} -gt 0 ] || quiet="-q"
 		${SVN_CMD} upgrade ${PORTSMNT:-${PTMNT}} 2>/dev/null || :
 		${SVN_CMD} ${quiet} update \
 			${SVN_PRESERVE_TIMESTAMP} \
-			${PORTSMNT:-${PTMNT}}
+			${PORTSMNT:-${PTMNT}} || \
+		    err 1 " fail"
 		echo " done"
 		;;
 	git*)
+		# !! Any changes here should be considered for jail.sh too.
 		msg_n "Updating portstree \"${PTNAME}\" with ${METHOD}..."
-		[ ${VERBOSE} -gt 0 ] || quiet="-q"
-		${GIT_CMD} -C ${PORTSMNT:-${PTMNT}} pull --rebase ${quiet}
+		${GIT_CMD} -C ${PORTSMNT:-${PTMNT}} pull --rebase ${quiet} || \
+		    err 1 " fail"
 		echo " done"
 		;;
 	null|none) msg "Not updating portstree \"${PTNAME}\" with method ${METHOD}" ;;
@@ -399,4 +394,9 @@ if [ ${UPDATE} -eq 1 ]; then
 
 	pset ${PTNAME} timestamp $(clock -epoch)
 	run_hook ports_update "done"
-fi
+	;;
+
+*)
+	usage
+	;;
+esac

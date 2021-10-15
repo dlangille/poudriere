@@ -41,7 +41,6 @@ __FBSDID("$FreeBSD$");
 
 #include <err.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,21 +51,15 @@ __FBSDID("$FreeBSD$");
 #ifdef SHELL
 #define main pwaitcmd
 #include "bltin/bltin.h"
-#include "options.h"
 #include "helpers.h"
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
 #endif
 
 static void
 usage(void)
 {
 
-	fprintf(stderr, "usage: pwait [-t timeout] [-v] pid ...\n");
-#ifdef SHELL
-	error(NULL);
-#else
+	fprintf(stderr, "usage: pwait [-t timeout] [-ov] pid ...\n");
 	exit(EX_USAGE);
-#endif
 }
 
 /*
@@ -77,38 +70,37 @@ main(int argc, char *argv[])
 {
 #ifdef SHELL
 	struct sigdata info_oact, alrm_oact;
+	int pushed_alarm;
 #endif
 	struct itimerval itv;
-	int kq;
 	struct kevent *e;
-	int tflag, verbose;
-	int opt, nleft, n, i, duplicate, status;
+	int oflag, tflag, verbose;
+	int i, kq, n, nleft, opt, status;
 	long pid;
-	char *s, *end;
+	char *end, *s;
 	double timeout;
 	pid_t me;
 
-	tflag = verbose = 0;
+	oflag = 0;
+	tflag = 0;
+	verbose = 0;
 	memset(&itv, 0, sizeof(itv));
+
 #ifdef SHELL
-	while ((opt = nextopt("t:v")) != '\0') {
-#else
-	while ((opt = getopt(argc, argv, "t:v")) != -1) {
+	pushed_alarm = 0;
 #endif
+	while ((opt = getopt(argc, argv, "ot:v")) != -1) {
 		switch (opt) {
+		case 'o':
+			oflag = 1;
+			break;
 		case 't':
 			tflag = 1;
 			errno = 0;
-#ifdef SHELL
-			timeout = strtod(shoptarg, &end);
-			if (end == shoptarg || errno == ERANGE ||
-			    timeout < 0)
-#else
 			timeout = strtod(optarg, &end);
-			if (end == optarg || errno == ERANGE ||
-			    timeout < 0)
-#endif
+			if (end == optarg || errno == ERANGE || timeout < 0) {
 				errx(EX_DATAERR, "timeout value");
+			}
 			switch(*end) {
 			case 0:
 			case 's':
@@ -122,8 +114,9 @@ main(int argc, char *argv[])
 			default:
 				errx(EX_DATAERR, "timeout unit");
 			}
-			if (timeout > 100000000L)
+			if (timeout > 100000000L) {
 				errx(EX_DATAERR, "timeout value");
+			}
 			itv.it_value.tv_sec = (time_t)timeout;
 			timeout -= (time_t)timeout;
 			itv.it_value.tv_usec =
@@ -137,16 +130,13 @@ main(int argc, char *argv[])
 			/* NOTREACHED */
 		}
 	}
-#ifdef SHELL
-	argc -= argptr - argv;
-	argv = argptr;
-#else
+
 	argc -= optind;
 	argv += optind;
-#endif
 
-	if (argc == 0)
+	if (argc == 0) {
 		usage();
+	}
 
 #ifndef SHELL
 	me = getpid();
@@ -164,7 +154,7 @@ main(int argc, char *argv[])
 		trap_pop(SIGINFO, &info_oact);
 		INTON;
 #endif
-		err(1, "%s", "kqueue");
+		err(EX_OSERR, "kqueue");
 	}
 
 	e = malloc((argc + tflag) * sizeof(struct kevent));
@@ -174,13 +164,15 @@ main(int argc, char *argv[])
 		trap_pop(SIGINFO, &info_oact);
 		INTON;
 #endif
-		err(1, "%s", "malloc");
+		err(EX_OSERR, "malloc");
 	}
 	nleft = 0;
 	for (n = 0; n < argc; n++) {
 		s = argv[n];
-		if (!strncmp(s, "/proc/", 6)) /* Undocumented Solaris compat */
+		/* Undocumented Solaris compat */
+		if (!strncmp(s, "/proc/", 6)) {
 			s += 6;
+		}
 		errno = 0;
 		pid = strtol(s, &end, 10);
 		if (pid < 0 || *end != '\0' || errno != 0) {
@@ -191,21 +183,33 @@ main(int argc, char *argv[])
 			warnx("%s: ignoring own process id", s);
 			continue;
 		}
-		duplicate = 0;
-		for (i = 0; i < nleft; i++)
-			if (e[i].ident == (uintptr_t)pid)
-				duplicate = 1;
-		if (!duplicate) {
-			EV_SET(e + nleft, pid, EVFILT_PROC, EV_ADD, NOTE_EXIT,
-			    0, NULL);
-			if (kevent(kq, e + nleft, 1, NULL, 0, NULL) == -1)
-				warn("%ld", pid);
-			else
-				nleft++;
+		for (i = 0; i < nleft; i++) {
+			if (e[i].ident == (uintptr_t)pid) {
+				break;
+			}
+		}
+		if (i < nleft) {
+			/* Duplicate. */
+			continue;
+		}
+		EV_SET(e + nleft, pid, EVFILT_PROC, EV_ADD, NOTE_EXIT, 0, NULL);
+		if (kevent(kq, e + nleft, 1, NULL, 0, NULL) == -1) {
+			warn("%ld", pid);
+			if (oflag) {
+#ifdef SHELL
+				close(kq);
+				free(e);
+				trap_pop(SIGINFO, &info_oact);
+				INTON;
+#endif
+				exit(EX_OK);
+			}
+		} else {
+			nleft++;
 		}
 	}
 
-	if (tflag) {
+	if (nleft > 0 && tflag) {
 		/*
 		 * Explicitly detect SIGALRM so that an exit status of 124
 		 * can be returned rather than 142.
@@ -218,11 +222,12 @@ main(int argc, char *argv[])
 			trap_pop(SIGINFO, &info_oact);
 			INTON;
 #endif
-			err(EX_OSERR, "%s", "kevent");
+			err(EX_OSERR, "kevent");
 		}
 		/* Ignore SIGALRM to not interrupt kevent(2). */
 #ifdef SHELL
 		trap_push(SIGALRM, &alrm_oact);
+		pushed_alarm = 1;
 #else
 		signal(SIGALRM, SIG_IGN);
 #endif
@@ -234,7 +239,7 @@ main(int argc, char *argv[])
 			trap_pop(SIGALRM, &alrm_oact);
 			INTON;
 #endif
-			err(EX_OSERR, "%s", "setitimer");
+			err(EX_OSERR, "setitimer");
 		}
 	}
 	while (nleft > 0) {
@@ -244,56 +249,72 @@ main(int argc, char *argv[])
 			close(kq);
 			free(e);
 			trap_pop(SIGINFO, &info_oact);
-			if (tflag) {
+			if (tflag && pushed_alarm) {
 				alarm(0);
 				trap_pop(SIGALRM, &alrm_oact);
 			}
 			INTON;
 #endif
-			err(1, "%s", "kevent");
+			err(EX_OSERR, "kevent");
 		}
 		for (i = 0; i < n; i++) {
 			if (e[i].filter == EVFILT_SIGNAL) {
-				if (verbose)
+				if (verbose) {
 					printf("timeout\n");
+				}
 #ifdef SHELL
 				close(kq);
 				free(e);
 				trap_pop(SIGINFO, &info_oact);
-				if (tflag) {
+				if (tflag && pushed_alarm) {
 					alarm(0);
 					trap_pop(SIGALRM, &alrm_oact);
 				}
 				INTON;
 #endif
-				return (124);
+				exit(124);
 			}
 			if (verbose) {
 				status = e[i].data;
-				if (WIFEXITED(status))
+				if (WIFEXITED(status)) {
 					printf("%ld: exited with status %d.\n",
 					    (long)e[i].ident,
 					    WEXITSTATUS(status));
-				else if (WIFSIGNALED(status))
+				} else if (WIFSIGNALED(status)) {
 					printf("%ld: killed by signal %d.\n",
 					    (long)e[i].ident,
 					    WTERMSIG(status));
-				else
+				} else {
 					printf("%ld: terminated.\n",
 					    (long)e[i].ident);
+				}
+			}
+			if (oflag) {
+#ifdef SHELL
+				close(kq);
+				free(e);
+				trap_pop(SIGINFO, &info_oact);
+				if (tflag && pushed_alarm) {
+					alarm(0);
+					trap_pop(SIGALRM, &alrm_oact);
+				}
+				INTON;
+#endif
+				exit(EX_OK);
 			}
 			--nleft;
 		}
 	}
+
 #ifdef SHELL
 	close(kq);
 	free(e);
 	trap_pop(SIGINFO, &info_oact);
-	if (tflag) {
+	if (tflag && pushed_alarm) {
 		alarm(0);
 		trap_pop(SIGALRM, &alrm_oact);
 	}
 	INTON;
 #endif
-	return (EX_OK);
+	exit(EX_OK);
 }

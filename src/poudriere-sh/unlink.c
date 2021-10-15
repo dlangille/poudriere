@@ -33,8 +33,7 @@
 #ifdef SHELL
 #define main unlinkcmd
 #include "bltin/bltin.h"
-#include <errno.h>
-#define err(exitstatus, fmt, ...) error(fmt ": %s", __VA_ARGS__, strerror(errno))
+#include "helpers.h"
 #endif
 
 /**
@@ -48,11 +47,7 @@ main(int argc, char **argv)
 		errx(EX_USAGE, "Usage: unlink file");
 
 	if (unlink(argv[1]))
-#ifdef SHELL
-		error("%s", strerror(errno));
-#else
-		err(EXIT_FAILURE, NULL);
-#endif
+		err(EXIT_FAILURE, "%s", argv[1]);
 
 	return (0);
 }
